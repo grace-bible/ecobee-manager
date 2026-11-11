@@ -1,0 +1,53 @@
+# Paste into a Komodo stack (UI-defined compose, like stream-scheduler).
+# Put every ${VAR} below in the stack's Environment; Komodo writes them to .env.
+# Turn on "Poll for updates" + "Auto update" so a push to main redeploys.
+services:
+  app:
+    image: ghcr.io/grace-bible/ecobee-manager:main
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: postgresql+psycopg://ecobee:${POSTGRES_PASSWORD}@db:5432/ecobee
+      APP_SECRET_KEY: ${APP_SECRET_KEY}
+      DRY_RUN: ${DRY_RUN:-true}
+      ECOBEE_USERNAME: ${ECOBEE_USERNAME}
+      ECOBEE_PASSWORD: ${ECOBEE_PASSWORD}
+      ECOBEE_TOTP_SECRET: ${ECOBEE_TOTP_SECRET}
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON}
+      GOOGLE_IMPERSONATE: ${GOOGLE_IMPERSONATE}
+      CF_ACCESS_TEAM_DOMAIN: ${CF_ACCESS_TEAM_DOMAIN}
+      CF_ACCESS_AUD: ${CF_ACCESS_AUD}
+      ALLOWED_EMAIL_DOMAINS: grace-bible.org
+      ADMIN_EMAILS: ${ADMIN_EMAILS}
+      DEFAULT_TIMEZONE: America/Chicago
+      GOOGLE_CHAT_WEBHOOK: ${GOOGLE_CHAT_WEBHOOK}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ecobee
+      POSTGRES_DB: ecobee
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ecobee-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ecobee']
+      interval: 10s
+      retries: 5
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      # Tunnel public hostname → http://app:8000
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    depends_on:
+      - app
+
+volumes:
+  ecobee-pgdata:

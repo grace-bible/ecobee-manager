@@ -1,0 +1,28 @@
+# Reaching the app from outside, through Cloudflare Zero Trust.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.cloudflare.yml up -d
+#
+#  1. Zero Trust → Networks → Tunnels → create a tunnel, copy its token.
+#  2. On that tunnel, add a public hostname pointing at http://app:8000
+#     (the service name, on the network compose puts both containers on).
+#  3. Zero Trust → Access → Applications → self-hosted app on that hostname,
+#     with a policy for who may reach it. Copy its AUD tag to CF_ACCESS_AUD.
+#
+# Unlike stream-scheduler this app verifies the Access JWT itself
+# (Cf-Access-Jwt-Assertion, signature + AUD + issuer), so traffic that reaches
+# the container without going through Access is refused, not trusted. That is
+# why CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required here.
+services:
+  app:
+    environment:
+      CF_ACCESS_TEAM_DOMAIN: '${CF_ACCESS_TEAM_DOMAIN:?e.g. yourteam.cloudflareaccess.com}'
+      CF_ACCESS_AUD: '${CF_ACCESS_AUD:?the Access application AUD tag}'
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: '${TUNNEL_TOKEN:?create a tunnel in the Cloudflare dashboard and put its token here}'
+    depends_on:
+      - app

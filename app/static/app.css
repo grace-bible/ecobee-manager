@@ -1,0 +1,60 @@
+:root {
+  --bg: #f7f7f5; --panel: #fff; --ink: #1d1d1b; --muted: #6b6b66; --line: #e3e2dd;
+  --accent: #1f5f8b; --warn-bg: #fff4d6; --warn-ink: #6b4e00; --ok: #2e7d4f; --bad: #b3261e;
+  --heat: #c2410c; --cool: #1d4ed8;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #161615; --panel: #1f1f1d; --ink: #ecebe6; --muted: #a09f98; --line: #34332f;
+          --accent: #7fb3d9; --warn-bg: #3a300f; --warn-ink: #f2d98a; --heat: #fb923c; --cool: #93c5fd; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
+header { display: flex; gap: 24px; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+.brand { font-weight: 650; color: var(--ink); text-decoration: none; }
+nav { display: flex; gap: 16px; flex: 1; }
+nav a { color: var(--muted); text-decoration: none; }
+nav a:hover { color: var(--ink); }
+.who { color: var(--muted); font-size: 13px; }
+main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 60px; }
+.banner { padding: 8px 20px; font-size: 14px; }
+.banner.warn { background: var(--warn-bg); color: var(--warn-ink); }
+h1 { font-size: 22px; margin: 0 0 16px; }
+h2 { font-size: 17px; margin: 28px 0 10px; }
+h3 { font-size: 15px; margin: 18px 0 8px; color: var(--muted); font-weight: 600; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+table { width: 100%; border-collapse: collapse; background: var(--panel); }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.heat { color: var(--heat); } .cool { color: var(--cool); }
+.muted { color: var(--muted); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.dot.on { background: var(--ok); } .dot.off { background: var(--bad); }
+.badge { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.badge.override { border-color: var(--accent); color: var(--accent); }
+.badge.calendar { border-color: var(--ok); color: var(--ok); }
+form.inline { display: inline; }
+.bulk { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+label.check { flex-direction: row; align-items: center; gap: 6px; color: var(--ink); }
+input, select, textarea { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+input[type=number] { width: 80px; }
+button { font: inherit; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+button.secondary { background: transparent; color: var(--accent); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+.timeline { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.timeline div { display: grid; grid-template-columns: 220px 120px 1fr; gap: 8px; padding: 3px 0; border-bottom: 1px dashed var(--line); }
+.msg { padding: 8px 12px; border-radius: 6px; background: var(--warn-bg); color: var(--warn-ink); margin-bottom: 12px; }
+@media (max-width: 700px) {
+  .timeline div { grid-template-columns: 1fr; }
+  table { font-size: 13px; }
+  .hide-sm { display: none; }
+}
+.banner.bad { background: color-mix(in srgb, var(--bad) 14%, var(--panel)); color: var(--ink); }
+button.danger { background: transparent; border-color: var(--bad); color: var(--bad); }
+button.small { padding: 3px 10px; font-size: 13px; }
+.day { display: inline-block; font-size: 12px; padding: 0 5px; margin-right: 2px; border-radius: 4px; background: var(--bg); border: 1px solid var(--line); }
+fieldset.days { border: 0; padding: 0; margin: 0; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+fieldset.days legend { font-size: 13px; color: var(--muted); padding: 0; margin-bottom: 4px; }
+.badge.schedule { border-color: var(--muted); color: var(--ink); }
+input[type=time] { width: auto; }

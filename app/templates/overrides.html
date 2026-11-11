@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Overrides{% endblock %}
+{% block content %}
+<h1>Active overrides</h1>
+<table>
+  <thead><tr><th>Target</th><th>Setting</th><th>Ends</th><th>By</th><th>Reason</th><th></th></tr></thead>
+  <tbody>
+  {% for o in rows %}
+    {% set kind = 'thermostat' if o.thermostat_id else 'zone' if o.zone_id else 'group' %}
+    {% set tid = o.thermostat_id or o.zone_id or o.group_id %}
+    <tr>
+      <td>{{ kind }}: {{ names.get((kind, tid), tid) }}</td>
+      <td>{{ o.mode }}{% if o.mode == 'custom' %} <span class="heat">{{ o.heat or '' }}</span> / <span class="cool">{{ o.cool or '' }}</span>{% endif %}</td>
+      <td class="num">{{ o.ends_at | local }}</td>
+      <td>{{ o.created_by }}</td>
+      <td class="muted">{{ o.reason or '' }}</td>
+      <td>{% if o.id in cancellable %}<form class="inline" method="post" action="/overrides/{{ o.id }}/cancel"><button class="secondary">Cancel</button></form>{% endif %}</td>
+    </tr>
+  {% else %}<tr><td colspan="6" class="muted">No active overrides.</td></tr>{% endfor %}
+  </tbody>
+</table>
+{% endblock %}

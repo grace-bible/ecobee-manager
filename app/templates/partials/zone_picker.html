@@ -1,0 +1,16 @@
+{# Zone checkboxes by campus. Needs: campuses, me, optional selected (set of zone ids) #}
+<h3>Zones</h3>
+{% for c in campuses %}{% if c.zones %}
+  <p class="muted">{{ c.name }}</p>
+  <div class="grid">
+  {% for z in c.zones | sort(attribute='name') %}
+    {% set on = selected is defined and z.id in selected %}
+    {% if me.may_touch_campus(c.id) %}
+      <label class="check"><input type="checkbox" name="zone_ids" value="{{ z.id }}" {% if on %}checked{% endif %}> {{ z.name }}</label>
+    {% elif on %}
+      {# Keep zones a campus manager can't edit in the group; show them read-only. #}
+      <input type="hidden" name="zone_ids" value="{{ z.id }}"><label class="check muted">✓ {{ z.name }}</label>
+    {% endif %}
+  {% endfor %}
+  </div>
+{% endif %}{% else %}<p class="muted">No zones yet.</p>{% endfor %}

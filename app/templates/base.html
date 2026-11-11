@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Thermostats{% endblock %} · GBC</title>
+  <script src="https://unpkg.com/htmx.org@2.0.3" defer></script>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">GBC Thermostats</a>
+    <nav>
+      <a href="/">Overview</a>
+      <a href="/groups">Groups</a>
+      <a href="/overrides">Overrides</a>
+      <a href="/audit">Audit log</a>
+      <a href="/settings">Settings</a>
+    </nav>
+    <span class="who">{{ me.name }} · {{ me.role }}</span>
+  </header>
+  {% if settings().dry_run %}
+  <div class="banner warn">Dry run: the scheduler logs what it would send but doesn't touch any thermostat. Set <code>DRY_RUN=false</code> to go live.</div>
+  {% endif %}
+  {% set alerts = open_alerts() %}
+  {% if alerts %}
+  <div class="banner bad"><strong>{{ alerts | length }} open alert{{ 's' if alerts | length > 1 }}:</strong>
+    {% for a in alerts[:3] %}{{ a.message }}{% if not loop.last %} · {% endif %}{% endfor %}{% if alerts | length > 3 %} · <a href="/settings#alerts">more</a>{% endif %}</div>
+  {% endif %}
+  <main>{% block content %}{% endblock %}</main>
+</body>
+</html>

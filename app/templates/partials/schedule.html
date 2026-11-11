@@ -1,0 +1,39 @@
+{# Weekly schedule blocks for one zone or group.
+   Needs: blocks, owner_field ('zone_id'|'group_id'), owner_id, editable #}
+{% set days = [('Mon',1),('Tue',2),('Wed',4),('Thu',8),('Fri',16),('Sat',32),('Sun',64)] %}
+<table>
+  <thead><tr><th>Days</th><th>Time</th><th>Mode</th><th>Label</th><th></th></tr></thead>
+  <tbody>
+  {% for b in blocks %}
+    <tr>
+      <td>{% for name, bit in days %}{% if b.weekdays|int // bit % 2 %}<span class="day">{{ name }}</span>{% endif %}{% endfor %}</td>
+      <td class="num">{{ b.start }}–{{ b.end }}</td>
+      <td>{{ b.mode }}{% if b.mode == 'custom' %} <span class="heat">{{ b.heat or '' }}</span> / <span class="cool">{{ b.cool or '' }}</span>{% endif %}</td>
+      <td class="muted">{{ b.label or '' }}</td>
+      <td>{% if editable %}<form class="inline" method="post" action="/schedule-blocks/{{ b.id }}/delete"><button class="secondary small" aria-label="Delete block">Delete</button></form>{% endif %}</td>
+    </tr>
+  {% else %}<tr><td colspan="5" class="muted">No weekly blocks.{% if owner_field == 'zone_id' %} Without one, the zone is unoccupied unless a group schedule, the calendar or an override says otherwise.{% endif %}</td></tr>{% endfor %}
+  </tbody>
+</table>
+{% if editable %}
+<form method="post" action="/schedule-blocks" class="panel bulk block-form">
+  <input type="hidden" name="{{ owner_field }}" value="{{ owner_id }}">
+  <fieldset class="days"><legend>Days</legend>
+    {% for name, bit in days %}<label class="check"><input type="checkbox" name="weekdays" value="{{ bit }}" {% if bit < 32 %}checked{% endif %}> {{ name }}</label>{% endfor %}
+  </fieldset>
+  <label>From <input type="time" name="start" value="08:00" required></label>
+  <label>To <input type="time" name="end" value="17:00" required></label>
+  <label>Mode
+    <select name="mode">
+      <option value="occupied">Occupied</option>
+      <option value="unoccupied">Unoccupied</option>
+      <option value="off">Off (widest band)</option>
+      <option value="custom">Custom setpoints</option>
+    </select>
+  </label>
+  <label>Heat °F <input type="number" name="heat" step="0.5" min="45" max="92"></label>
+  <label>Cool °F <input type="number" name="cool" step="0.5" min="45" max="92"></label>
+  <label>Label <input name="label" placeholder="e.g. Office hours"></label>
+  <button type="submit">Add block</button>
+</form>
+{% endif %}

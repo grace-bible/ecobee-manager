@@ -1,0 +1,55 @@
+# ecobee-manager + Postgres. Same shape as stream-scheduler: one app container,
+# published to loopback only; docker-compose.cloudflare.yml adds the tunnel.
+#
+#   docker compose up -d                                            # local / LAN
+#   docker compose -f docker-compose.yml -f docker-compose.cloudflare.yml up -d
+#
+# In Komodo, paste docker-compose.komodo.yml instead (image, not build) and put
+# the variables below in the stack's Environment.
+services:
+  app:
+    # Builds from this checkout. To run the published image instead, drop the
+    # build line and set image to ghcr.io/grace-bible/ecobee-manager:main
+    build: .
+    image: ecobee-manager:local
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:8000:8000'
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DATABASE_URL: postgresql+psycopg://ecobee:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/ecobee
+      # Fernet key; encrypts the stored ecobee tokens.
+      APP_SECRET_KEY: ${APP_SECRET_KEY:?generate one with python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"}
+      DRY_RUN: ${DRY_RUN:-true}
+      ECOBEE_USERNAME: ${ECOBEE_USERNAME:-}
+      ECOBEE_PASSWORD: ${ECOBEE_PASSWORD:-}
+      ECOBEE_TOTP_SECRET: ${ECOBEE_TOTP_SECRET:-}
+      # The whole service-account JSON key, on one line. No file to mount.
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON:-}
+      GOOGLE_IMPERSONATE: ${GOOGLE_IMPERSONATE:-}
+      CF_ACCESS_TEAM_DOMAIN: ${CF_ACCESS_TEAM_DOMAIN:-}
+      CF_ACCESS_AUD: ${CF_ACCESS_AUD:-}
+      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:-grace-bible.org}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+      DEFAULT_TIMEZONE: ${DEFAULT_TIMEZONE:-America/Chicago}
+      GOOGLE_CHAT_WEBHOOK: ${GOOGLE_CHAT_WEBHOOK:-}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ecobee
+      POSTGRES_DB: ecobee
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - ecobee-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ecobee']
+      interval: 10s
+      retries: 5
+
+volumes:
+  ecobee-pgdata:

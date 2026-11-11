@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+{% if message %}<div class="msg">{{ message }}</div>{% endif %}
+
+<h2>ecobee account</h2>
+<div class="panel">
+  <p>Account: <strong>{{ settings().ecobee_username or 'not set' }}</strong> ·
+     MFA: {{ 'TOTP secret configured (unattended re-login)' if settings().ecobee_totp_secret else 'no TOTP secret — a forced re-login needs a code entered here' }}</p>
+  <p>Last login: {{ creds.last_login | local if creds and creds.last_login else 'never' }}
+    {% if creds and creds.last_error %}<br><span class="heat">Last error: {{ creds.last_error }}</span>{% endif %}</p>
+  {% if me.role == 'admin' %}
+  <form method="post" action="/settings/ecobee-login" class="bulk">
+    <label>MFA code (only if asked) <input name="mfa_code" inputmode="numeric" autocomplete="one-time-code"></label>
+    <button>Log in to ecobee</button>
+  </form>
+  {% endif %}
+</div>
+
+<h2>Google Calendar</h2>
+<div class="panel">
+  <p>{{ 'Service account configured, acting as ' ~ settings().google_impersonate if google else 'Not configured — set GOOGLE_SERVICE_ACCOUNT_JSON and GOOGLE_IMPERSONATE.' }}</p>
+  {% if syncs %}
+  <table>
+    <thead><tr><th>Calendar</th><th>Last sync</th><th>Error</th></tr></thead>
+    <tbody>{% for s in syncs %}<tr><td>{{ s.calendar_id }}</td><td class="num">{{ s.last_success | local }}</td><td class="heat">{{ s.last_error or '' }}</td></tr>{% endfor %}</tbody>
+  </table>
+  {% endif %}
+</div>
+
+<h2 id="alerts">Alerts</h2>
+<div class="panel">
+  <p>{{ 'Posting to Google Chat.' if settings().google_chat_webhook else 'No GOOGLE_CHAT_WEBHOOK set — alerts show here and in the banner only.' }}
+    <span class="muted">Offline &gt; {{ settings().alert_offline_minutes }} min · off target &gt; {{ settings().alert_setpoint_minutes }} min into occupancy · ecobee login failing · calendar sync failing &gt; {{ settings().alert_calendar_minutes }} min.</span></p>
+  <table>
+    <thead><tr><th>Opened</th><th>Kind</th><th>Alert</th><th>Resolved</th></tr></thead>
+    <tbody>{% for a in alert_rows %}<tr><td class="num">{{ a.opened_at | local }}</td><td><span class="badge">{{ a.kind }}</span></td><td>{{ a.message }}</td><td class="num">{{ a.resolved_at | local if a.resolved_at else 'open' }}</td></tr>
+    {% else %}<tr><td colspan="4" class="muted">No alerts.</td></tr>{% endfor %}</tbody>
+  </table>
+</div>
+
+{% if me.role == 'admin' %}
+<h2>Users</h2>
+<div class="panel">
+  <p class="muted">People appear here after their first visit through Cloudflare Access. Anyone in ADMIN_EMAILS is always an admin. Campus managers can change zones, groups, schedules and overrides on their campuses only.</p>
+  <table>
+    <thead><tr><th>User</th><th>Last visit</th><th>Access</th></tr></thead>
+    <tbody>{% for u in users %}
+      <tr><td>{{ u.email }}</td><td class="num">{{ u.last_login | local }}</td>
+        <td><form method="post" action="/settings/users/{{ u.id }}" class="bulk">
+          <select name="role" aria-label="Role for {{ u.email }}">
+            {% for r in ['viewer', 'campus_manager', 'admin'] %}<option value="{{ r }}" {% if u.role == r %}selected{% endif %}>{{ r | replace('_', ' ') }}</option>{% endfor %}
+          </select>
+          {% for c in all_campuses %}<label class="check"><input type="checkbox" name="campus_ids" value="{{ c.id }}" {% if c.id in (u.campus_ids or []) %}checked{% endif %}> {{ c.name }}</label>{% endfor %}
+          <button class="secondary small">Save</button>
+        </form></td></tr>
+    {% endfor %}</tbody>
+  </table>
+</div>
+
+<h2>Run now</h2>
+<div class="panel bulk">
+  {% for job in ['poll', 'calendar', 'reconcile', 'alerts'] %}
+    <form class="inline" method="post" action="/settings/run/{{ job }}"><button class="secondary">{{ job }}</button></form>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}{{ zone.name if zone else 'New zone' }}{% endblock %}
+{% block content %}
+<h1>{{ zone.name if zone else 'New zone' }}</h1>
+
+<form method="post" action="/zones{% if zone %}/{{ zone.id }}{% endif %}" class="panel">
+  <div class="grid">
+    <label>Name <input name="name" required value="{{ zone.name if zone else '' }}"></label>
+    <label>Campus
+      <select name="campus_id" required>
+        {% for c in campuses if me.may_touch_campus(c.id) or (zone and zone.campus_id == c.id) %}<option value="{{ c.id }}" {% if zone and zone.campus_id == c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="check"><input type="checkbox" name="enabled" {% if not zone or zone.enabled %}checked{% endif %}> Managed by scheduler</label>
+  </div>
+
+  <h3>Room calendar</h3>
+  {% if resources %}
+    <label>Google resource calendar
+      <select name="calendar_id">
+        <option value="">— none —</option>
+        {% for r in resources %}
+          <option value="{{ r.email }}" {% if zone and zone.calendar_id == r.email %}selected{% endif %}>
+            {% if r.building %}{{ r.building }} · {% endif %}{{ r.name }}{% if r.capacity %} ({{ r.capacity }}){% endif %}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+  {% else %}
+    <label>Resource calendar ID
+      <input name="calendar_id" size="60" placeholder="c_…@resource.calendar.google.com" value="{{ zone.calendar_id if zone and zone.calendar_id else '' }}">
+    </label>
+    <p class="muted">{% if resource_error %}Couldn't list rooms: {{ resource_error }}{% else %}Configure the Google service account to pick rooms from a list.{% endif %}</p>
+  {% endif %}
+  <div class="grid">
+    <label>Start conditioning (min before) <input type="number" name="lead_minutes" min="0" max="240" value="{{ zone.lead_minutes if zone else 45 }}"></label>
+    <label>Keep conditioning (min after) <input type="number" name="tail_minutes" min="0" max="240" value="{{ zone.tail_minutes if zone else 15 }}"></label>
+  </div>
+
+  <h3>Setpoints (°F)</h3>
+  <div class="grid">
+    <label>Occupied heat <input type="number" step="0.5" name="occupied_heat" value="{{ zone.occupied_heat if zone else 68 }}"></label>
+    <label>Occupied cool <input type="number" step="0.5" name="occupied_cool" value="{{ zone.occupied_cool if zone else 72 }}"></label>
+    <label>Unoccupied heat <input type="number" step="0.5" name="unoccupied_heat" value="{{ zone.unoccupied_heat if zone else 60 }}"></label>
+    <label>Unoccupied cool <input type="number" step="0.5" name="unoccupied_cool" value="{{ zone.unoccupied_cool if zone else 82 }}"></label>
+    <label>Never below <input type="number" step="0.5" name="min_setpoint" value="{{ zone.min_setpoint if zone else 60 }}"></label>
+    <label>Never above <input type="number" step="0.5" name="max_setpoint" value="{{ zone.max_setpoint if zone else 85 }}"></label>
+  </div>
+
+  <h3>Thermostats</h3>
+  <div class="grid">
+    {% for t in thermostats %}
+      <label class="check"><input type="checkbox" name="thermostat_ids" value="{{ t.id }}" {% if zone and t.zone_id == zone.id %}checked{% endif %}>
+        <span class="dot {{ 'on' if t.connected else 'off' }}"></span>{{ t.name }}</label>
+    {% else %}<p class="muted">No unassigned thermostats. They appear here after the first ecobee poll.</p>{% endfor %}
+  </div>
+
+  {% if editable %}<p><button type="submit">Save zone</button></p>{% endif %}
+</form>
+
+{% if zone %}
+<h2>Weekly schedule</h2>
+<p class="muted">When the room is normally in use. Calendar bookings and overrides still win.
+  {% if zone.groups %}Group schedules also apply: {{ zone.groups | map(attribute='name') | join(', ') }}.{% endif %}</p>
+{% with owner_field='zone_id', owner_id=zone.id, editable=editable %}{% include "partials/schedule.html" %}{% endwith %}
+
+<h2>Next 48 hours</h2>
+<div class="panel timeline">
+  {% for s in preview %}
+    <div>
+      <span>{{ s.start | local }} – {{ s.end | local }}</span>
+      <span class="num"><span class="heat">{{ s.heat }}</span> / <span class="cool">{{ s.cool }}</span></span>
+      <span><span class="badge {{ s.source }}">{{ s.source }}</span> <span class="muted">{{ s.intent }}</span></span>
+    </div>
+  {% endfor %}
+</div>
+
+{% if zone.calendar_id %}
+<h2>Upcoming bookings</h2>
+<p class="muted">
+  {% if sync and sync.last_success %}Last synced {{ sync.last_success | local }}.{% else %}Not synced yet.{% endif %}
+  {% if sync and sync.last_error %}<span class="heat">Last error: {{ sync.last_error }}</span>{% endif %}
+  Tags in an event: <code>#nohvac</code>, <code>#hvac:heat=70</code>, <code>#hvac:cool=71</code>.
+</p>
+<table>
+  <thead><tr><th>When</th><th>Event</th><th>Tag</th></tr></thead>
+  <tbody>
+  {% for e in events %}
+    <tr><td class="num">{{ e.starts_at | local }} – {{ e.ends_at | local }}</td><td>{{ e.title or '(no title)' }}</td><td class="muted">{{ e.hvac_tag or '' }}</td></tr>
+  {% else %}<tr><td colspan="3" class="muted">Nothing booked in the sync window.</td></tr>{% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if editable %}
+<h2>Danger zone</h2>
+<form method="post" action="/zones/{{ zone.id }}/delete" onsubmit="return confirm('Delete this zone? Its thermostats become unassigned and return to their own program when the current hold ends.')">
+  <button class="danger">Delete zone</button>
+</form>
+{% endif %}
+{% endif %}
+{% endblock %}

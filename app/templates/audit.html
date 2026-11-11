@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Audit log{% endblock %}
+{% block content %}
+<h1>Audit log</h1>
+<table>
+  <thead><tr><th>When</th><th>Who</th><th>Source</th><th>Action</th><th>Target</th><th class="hide-sm">Detail</th></tr></thead>
+  <tbody>
+  {% for a in rows %}
+    <tr>
+      <td class="num">{{ a.at | local }}</td><td>{{ a.actor }}</td>
+      <td><span class="badge {{ a.source }}">{{ a.source }}</span></td>
+      <td>{{ a.action }}</td><td>{{ a.target }}</td>
+      <td class="hide-sm muted"><code>{{ a.detail | tojson if a.detail else '' }}</code></td>
+    </tr>
+  {% else %}<tr><td colspan="6" class="muted">Nothing yet.</td></tr>{% endfor %}
+  </tbody>
+</table>
+{% endblock %}

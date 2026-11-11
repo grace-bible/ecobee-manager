@@ -31,8 +31,7 @@ spaces. One container + Postgres; web UI and REST API; zones follow Google Works
   Put the secrets in the stack's **Environment** (`POSTGRES_PASSWORD`, `APP_SECRET_KEY`,
   `ECOBEE_*`, `GOOGLE_SERVICE_ACCOUNT_JSON`, `GOOGLE_IMPERSONATE`, `CF_ACCESS_*`,
   `TUNNEL_TOKEN`, `ADMIN_EMAILS`, `GOOGLE_CHAT_WEBHOOK`). Turn on *Poll for updates* and
-  *Auto update*. The repo is private, so the image is too: give Komodo a GHCR registry
-  account (a GitHub token with `read:packages`) and select it on the stack.
+  *Auto update*.
 - **Ingress:** the `cloudflared` sidecar dials out with `TUNNEL_TOKEN`; give the tunnel a
   public hostname pointing at `http://app:8000` and put an Access application on it.
   No ports are published and no reverse proxy is involved.

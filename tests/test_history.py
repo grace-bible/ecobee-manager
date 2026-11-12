@@ -56,3 +56,22 @@ def test_old_samples_are_pruned(monkeypatch):
     with session_scope() as s:
         oldest = s.scalar(select(func.min(RuntimeSample.at)))
     assert oldest is None or utcnow() - oldest.replace(tzinfo=utcnow().tzinfo) < timedelta(days=1)
+
+
+def test_cards_follow_the_chart_range():
+    with TestClient(app) as c:
+        poller.poll_once()
+        history.sync_once()
+        therms = {t["name"]: t for t in c.get("/api/v1/thermostats").json()}
+        campus = c.post("/api/v1/campuses", json={"name": "Ranges"}).json()["id"]
+        zone = c.post("/api/v1/zones", json={
+            "name": "Office", "campus_id": campus,
+            "thermostat_ids": [therms["Office Suite"]["id"]]}).json()["id"]
+        day = c.get(f"/api/v1/zones/{zone}/insights?days=1").json()
+        month = c.get(f"/api/v1/zones/{zone}/insights?days=30").json()
+        assert day["runtime_step"] == "hour" and 20 <= len(day["runtime"]) <= 25
+        assert month["runtime_step"] == "day" and len(month["runtime"]) >= 28
+        assert month["samples"] > day["samples"]
+        page = c.get(f"/zones/{zone}?range=30d").text
+        assert "last 30 days" in page and "last 7 days" not in page
+        assert "last 24 hours" in c.get(f"/zones/{zone}").text

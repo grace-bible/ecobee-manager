@@ -4,7 +4,7 @@
 - `time_to_target`: each time the target band tightened (heating up or cooling down to a
   new target), how long the room took to get there.
 - `downsample`: average into wider steps for long chart ranges.
-- `daily_runtime`: heating/cooling hours per local day.
+- `daily_runtime` / `hourly_runtime`: heating/cooling hours per local day or hour.
 - `occupancy`: hours conditioned for nobody, and hours occupied at setback (needs a
   thermostat with an occupancy sensor).
 """
@@ -113,6 +113,17 @@ def daily_runtime(points: list[Point], tz: str) -> list[tuple[date, float, float
         d[0] += p.heat_s / 3600
         d[1] += p.cool_s / 3600
     return [(d, round(h, 2), round(c, 2)) for d, (h, c) in sorted(days.items())]
+
+
+def hourly_runtime(points: list[Point], tz: str) -> list[tuple[datetime, float, float]]:
+    """[(local hour start, heating hours, cooling hours)] oldest first, for short ranges."""
+    zone = ZoneInfo(tz)
+    hours: dict[datetime, list[float]] = defaultdict(lambda: [0.0, 0.0])
+    for p in points:
+        h = hours[p.at.astimezone(zone).replace(minute=0, second=0, microsecond=0)]
+        h[0] += p.heat_s / 3600
+        h[1] += p.cool_s / 3600
+    return [(h, round(a, 2), round(b, 2)) for h, (a, b) in sorted(hours.items())]
 
 
 def occupancy(points: list[Point], setback_heat: float, setback_cool: float,

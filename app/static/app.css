@@ -271,7 +271,7 @@ dialog::backdrop { background: rgb(15 15 14 / .45); }
 .hint { font-size: 13px; padding: 6px 10px; border-radius: 8px; background: var(--ok-soft); color: var(--ok); }
 .hint.warn { background: var(--warn-soft); color: var(--warn); }
 .minibars { display: flex; gap: 6px; align-items: end; height: 70px; margin-top: 4px; }
-.minibars .day { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; }
+.minibars .mb-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; }
 .minibars .bars { flex: 1; width: 100%; display: flex; gap: 2px; align-items: end; justify-content: center; }
 .minibars i { display: block; width: 40%; max-width: 12px; border-radius: 3px 3px 0 0; min-height: 1px; }
 .minibars i.h { background: var(--heat); } .minibars i.c { background: var(--cool); }
@@ -289,3 +289,10 @@ a.plain { color: inherit; }
 .inline-edit { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
 .setup-building h3 { text-transform: none; letter-spacing: -.01em; font-size: 16px; color: var(--ink); }
 [id] { scroll-margin-top: 72px; }
+.minibars.dense { gap: 2px; }
+.minibars.dense i { width: 45%; }
+.minibars.dense span { white-space: nowrap; }
+.minibars .mb-col { min-width: 0; }
+.minibars.dense .day span { width: 0; overflow: visible; display: flex; justify-content: center; font-size: 10px; }
+.minibars.dense .bars { gap: 1px; }
+.minibars.dense i { width: 50%; }

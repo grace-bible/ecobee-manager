@@ -25,6 +25,7 @@ from app.ecobee.backend import AuthRequired, BackendError
 from app.insights import (
     Point,
     daily_runtime,
+    hourly_runtime,
     merge_room,
     occupancy,
     time_to_target,
@@ -339,7 +340,13 @@ def room_insights(z: Zone, now: datetime | None = None, days: int = 7) -> dict:
         "lead_minutes": z.lead_minutes,
         "time_to_target": [w.__dict__ for w in ws[-12:]],
         "time_to_target_summary": time_to_target_summary(ws),
-        "runtime": [{"day": d, "heat_h": h, "cool_h": c} for d, h, c in daily_runtime(pts, tz)],
+        # Hourly bars for a day; daily bars for longer ranges.
+        "runtime_step": "hour" if days <= 1 else "day",
+        "runtime": ([{"start": t, "label": t.strftime("%-I%p").lower()[:-1], "heat_h": h,
+                      "cool_h": c} for t, h, c in hourly_runtime(pts, tz)] if days <= 1 else
+                    [{"start": d, "label": d.strftime("%a")[:2] if days <= 7
+                      else d.strftime("%-d"), "heat_h": h, "cool_h": c}
+                     for d, h, c in daily_runtime(pts, tz)]),
         "runtime_total": {"heat_h": round(sum(p.heat_s for p in pts) / 3600, 1),
                           "cool_h": round(sum(p.cool_s for p in pts) / 3600, 1)},
         "occupancy": occupancy(pts, z.unoccupied_heat, z.unoccupied_cool),

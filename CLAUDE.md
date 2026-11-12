@@ -10,7 +10,7 @@ Full design: `docs/SPEC.md` — read it before changing behavior.
 
 ```bash
 python -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
-pytest -q                      # 54 tests, ~6 s
+pytest -q                      # 56 tests, ~8 s
 ruff check app tests           # must stay clean
 # Local run with 6 simulated thermostats (nothing real touched):
 ECOBEE_BACKEND=fake DEV_AUTH_EMAIL=you@example.org \

@@ -91,3 +91,11 @@ def test_downsample_averages_into_buckets():
     assert [x.temp for x in d] == [62, 68]
     assert [x.heat_s for x in d] == [200, 0]
     assert downsample(p, timedelta(minutes=5)) == p
+
+
+def test_hourly_runtime_for_short_ranges():
+    from app.insights import hourly_runtime
+    # 12 intervals (one hour) heating flat out, then 6 cooling at half.
+    p = pts([70] * 18, 68, 72, heat_s=[300] * 12 + [0] * 6, cool_s=[0] * 12 + [150] * 6)
+    hours = hourly_runtime(p, "America/Chicago")
+    assert [(h.hour, heat, cool) for h, heat, cool in hours] == [(6, 1.0, 0.0), (7, 0.0, 0.25)]

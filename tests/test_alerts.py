@@ -49,9 +49,9 @@ def test_check_once_opens_once_and_resolves(monkeypatch):
     from app import alerts
 
     sent = []
-    monkeypatch.setattr(alerts, "send_chat", lambda text: sent.append(text) or True)
+    monkeypatch.setattr(alerts, "send_chat", lambda text, url=None: sent.append(text) or True)
     incidents = {"offline:9": ("offline", "Hall has been offline for 20 min")}
-    monkeypatch.setattr(alerts, "gather", lambda now: dict(incidents))
+    monkeypatch.setattr(alerts, "gather_with_campuses", lambda now: (dict(incidents), {}))
 
     assert alerts.check_once(NOW)["opened"] == 1
     assert alerts.check_once(NOW + M)["opened"] == 0  # debounced: still open, no new message
@@ -74,3 +74,28 @@ def test_managed_thermostat_not_in_auto_is_an_incident():
     assert got["mode:1"][0] == "mode" and "cool only" in got["mode:1"][1]
     assert find_incidents(NOW, [therm(hvac_mode="auto")], None, []) == {}
     assert find_incidents(NOW, [therm(hvac_mode=None)], None, []) == {}  # unmanaged
+
+
+def test_alerts_route_to_the_campus_webhook(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app import alerts
+    from app.main import app
+
+    hook = "https://chat.googleapis.com/v1/spaces/X/messages?key=k"
+    with TestClient(app) as c:
+        cid = c.post("/api/v1/campuses", json={"name": "Routed"}).json()["id"]
+        assert c.put(f"/api/v1/campuses/{cid}", json={"name": "Routed", "chat_webhook": "nope"}
+                     ).status_code == 422
+        c.put(f"/api/v1/campuses/{cid}", json={"name": "Routed", "chat_webhook": hook})
+        assert next(x for x in c.get("/api/v1/campuses").json() if x["id"] == cid)[
+            "has_chat_webhook"]
+    sent = []
+    monkeypatch.setattr(alerts, "send_chat", lambda text, url=None: sent.append(url) or True)
+    monkeypatch.setattr(alerts, "gather_with_campuses", lambda now: (
+        {"offline:r1": ("offline", "A is offline"), "ecobee_auth": ("ecobee_auth", "login")},
+        {"offline:r1": cid, "ecobee_auth": None}))
+    alerts.check_once(NOW + 10 * M)
+    assert sorted(sent, key=str) == sorted([hook, None], key=str)
+    assert alerts.campus_for_key("ecobee:abc:ref", {"abc": 7}, {}) == 7
+    assert alerts.campus_for_key("calendar:c@r", {}, {"c@r": 3}) == 3

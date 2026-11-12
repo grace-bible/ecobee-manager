@@ -25,7 +25,9 @@ from app.db import session_scope
 from app.models import (
     Alert,
     CalendarSyncState,
+    Campus,
     EcobeeCredentials,
+    Room,
     Thermostat,
     Zone,
     aware,
@@ -122,7 +124,22 @@ def _occupied_for(cfg, now, ovs, events, blocks, days, deadband, look_back: time
     return now - t
 
 
+def campus_for_key(key: str, campus_of_thermostat: dict[str, int | None],
+                   campus_of_calendar: dict[str, int | None]) -> int | None:
+    """Which campus an incident belongs to (for routing to that campus's chat)."""
+    kind, _, rest = key.partition(":")
+    if kind in ("offline", "setpoint", "mode", "ecobee"):
+        return campus_of_thermostat.get(rest.split(":")[0])
+    if kind == "calendar":
+        return campus_of_calendar.get(rest)
+    return None  # app-wide (ecobee login)
+
+
 def gather(now: datetime) -> dict[str, tuple[str, str]]:
+    return gather_with_campuses(now)[0]
+
+
+def gather_with_campuses(now: datetime) -> tuple[dict[str, tuple[str, str]], dict]:
     from app.reconciler import gather_inputs, zone_cfg
     from app.resolver import resolve
 
@@ -153,21 +170,27 @@ def gather(now: datetime) -> dict[str, tuple[str, str]]:
                 therms.append(ThermoIn(t.identifier, t.name, t.connected, aware(t.last_seen),
                                        ecobee_alerts=tuple(t.ecobee_alerts or ())))
 
+        campus_of_thermostat = {t.identifier: t.campus_id for t in s.scalars(select(Thermostat))}
+        campus_of_calendar = {r.calendar_id: r.campus_id for r in s.scalars(select(Room))
+                              if r.calendar_id}
         creds = s.get(EcobeeCredentials, 1)
         ecobee_error = creds.last_error if creds else None
         wanted = {c for z in zones for c in z.calendar_ids}
         syncs = [SyncIn(r.calendar_id, aware(r.last_success), r.last_error)
                  for r in s.scalars(select(CalendarSyncState)) if r.calendar_id in wanted]
 
-    return find_incidents(
+    incidents = find_incidents(
         now, therms, ecobee_error, syncs,
         offline_after=timedelta(minutes=st.alert_offline_minutes),
         setpoint_after=setpoint_after, tolerance=st.alert_setpoint_tolerance_f,
         calendar_after=timedelta(minutes=st.alert_calendar_minutes))
+    return incidents, {k: campus_for_key(k, campus_of_thermostat, campus_of_calendar)
+                       for k in incidents}
 
 
-def send_chat(text: str) -> bool:
-    url = get_settings().google_chat_webhook
+def send_chat(text: str, url: str | None = None) -> bool:
+    """To the campus's webhook if given, else the app-wide GOOGLE_CHAT_WEBHOOK."""
+    url = url or get_settings().google_chat_webhook
     if not url:
         return False
     try:
@@ -180,13 +203,15 @@ def send_chat(text: str) -> bool:
 
 def check_once(now: datetime | None = None) -> dict:
     now = now or utcnow()
-    current = gather(now)
+    current, campus_of = gather_with_campuses(now)
     opened, resolved = [], []
     with session_scope() as s:
+        hooks = {c.id: c.chat_webhook for c in s.scalars(select(Campus)) if c.chat_webhook}
         open_rows = {a.key: a for a in s.scalars(select(Alert).where(Alert.resolved_at.is_(None)))}
         for key, (kind, msg) in current.items():
             if key not in open_rows:
-                a = Alert(key=key, kind=kind, message=msg, opened_at=now)
+                a = Alert(key=key, kind=kind, message=msg, opened_at=now,
+                          campus_id=campus_of.get(key))
                 s.add(a)
                 opened.append(a)
         for key, a in open_rows.items():
@@ -196,10 +221,10 @@ def check_once(now: datetime | None = None) -> dict:
         s.flush()
         # Retry a failed open notification next minute; a resolve is best-effort.
         for a in [*opened, *(a for a in open_rows.values() if not a.notified and not a.resolved_at)]:
-            a.notified = send_chat(f"⚠️ {a.message}")
+            a.notified = send_chat(f"⚠️ {a.message}", hooks.get(a.campus_id))
         for a in resolved:
             if a.notified:
-                send_chat(f"✅ Resolved: {a.message}")
+                send_chat(f"✅ Resolved: {a.message}", hooks.get(a.campus_id))
     return {"open": len(current), "opened": len(opened), "resolved": len(resolved)}
 
 

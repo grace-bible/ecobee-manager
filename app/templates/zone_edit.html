@@ -73,7 +73,9 @@
     {% endif %}{% endfor %}
     {% if not any_rooms.v %}<p class="muted">No rooms yet. <a href="/rooms/new">Add one</a> or import them from Google in Setup.</p>{% endif %}
     <div class="formgrid" style="margin-top:14px">
-      <label>Start heating or cooling this many minutes before a booking <input type="number" name="lead_minutes" min="0" max="240" value="{{ zone.lead_minutes if zone else 45 }}"></label>
+      <label>Start heating or cooling this many minutes before a booking <input type="number" name="lead_minutes" min="0" max="240" value="{{ zone.lead_minutes if zone else 45 }}" class="lead-input"></label>
+      <label class="check" style="align-self:end"><input type="checkbox" name="lead_auto" {% if zone and zone.lead_auto %}checked{% endif %}> Learn it from history
+        <span class="muted" style="font-weight:400">{% if zone and zone.lead_auto and zone.lead_learned_at %}(last updated {{ zone.lead_learned_at | when(zone.campus.timezone) }}){% else %}(updated nightly from how long this zone takes to reach its target){% endif %}</span></label>
       <label>Keep going this many minutes after <input type="number" name="tail_minutes" min="0" max="240" value="{{ zone.tail_minutes if zone else 15 }}"></label>
     </div>
     <p class="muted" style="font-size:13px">Booking tags: <code>#nohvac</code> ignores a booking; <code>#hvac:heat=70</code> and <code>#hvac:cool=71</code> set its temperatures.</p>
@@ -81,7 +83,13 @@
 
   <h2>Comfort</h2>
   <div class="panel">
-    <div class="formgrid">
+    <label style="max-width:360px;margin-bottom:14px">Comfort profile
+      <select name="profile_id" id="profile">
+        <option value="">This zone's own settings</option>
+        {% for pr in profiles %}<option value="{{ pr.id }}" data-campus="{{ pr.campus_id or '' }}" {% if zone and zone.profile_id == pr.id %}selected{% endif %}>{{ pr.name }} ({{ pr.occupied_heat | deg }}–{{ pr.occupied_cool | deg }}°)</option>{% endfor %}
+      </select></label>
+    <p class="muted profile-note" style="font-size:13px" hidden>Using a profile: these follow it. Change them in <a href="/setup/profiles">Comfort profiles</a>, which updates every zone using it.</p>
+    <div class="formgrid comfort-fields">
       <label>In use: heat to (°F) <input type="number" step="0.5" name="occupied_heat" value="{{ zone.occupied_heat if zone else 68 }}"></label>
       <label>In use: cool to (°F) <input type="number" step="0.5" name="occupied_cool" value="{{ zone.occupied_cool if zone else 72 }}"></label>
       <label>Empty: heat to (°F) <input type="number" step="0.5" name="unoccupied_heat" value="{{ zone.unoccupied_heat if zone else 60 }}"></label>
@@ -105,6 +113,16 @@
 {% endif %}
 
 <script>
+// A profile owns the comfort settings: show them read-only while one is picked.
+(() => {
+  const sel = document.getElementById('profile'); if (!sel) return;
+  const sync = () => {
+    const on = !!sel.value;
+    document.querySelectorAll('.comfort-fields input').forEach(i => i.readOnly = on);
+    document.querySelector('.profile-note').hidden = !on;
+  };
+  sel.addEventListener('change', sync); sync();
+})();
 // Only show buildings and rooms on the chosen campus.
 (() => {
   const sel = document.getElementById('campus'); if (!sel) return;

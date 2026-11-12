@@ -83,6 +83,7 @@ once by hand) — that's the fallback.
 | Table | Purpose / key fields |
 |---|---|
 | `campus` | name, timezone |
+| `comfort_profile` | name, campus_id (optional = every campus), occupied/unoccupied heat & cool, min/max, lead/tail — shared by zones |
 | `special_day` | campus_id, building_id (optional), first/last date, closed or special hours (start/end, mode), `closed_mode` (empty/off), `ignore_bookings`, label |
 | `building` | campus_id, name, Workspace `google_building_id` (from the room import) |
 | `room` | campus_id, building_id, name, **`calendar_id`** (Google resource calendar, unique), capacity — what people book |
@@ -120,6 +121,14 @@ taking the highest-priority active source:
 **Going live.** `DRY_RUN` is a master switch. With it off, each campus goes live on its own
 (Setup → campus → Go live); a zone can follow its campus or be set live / dry run itself.
 Non-live zones' writes are recorded only.
+
+**At scale.** Comfort profiles (`comfort_profile`) hold shared setpoints and lead/tail;
+zones using one follow it (values are copied to the zone, so everything reads the zone).
+Schedule blocks can be seasonal (`season_start`/`season_end`, MM-DD, may wrap New Year).
+Rooms have booking rules (`drives_hvac`, `min_booking_minutes`, `ignore_tentative`).
+Zones with `lead_auto` get their lead set nightly from the last 30 days of time-to-target
+(80th percentile + 10 min, 15–180). Each campus can have its own Google Chat webhook for its
+alerts. Buildings and zones have a week view showing what each zone will do and why.
 
 **Device checks.** The app relies on thermostats being in Auto (holds set heat and cool),
 and on each device's own program being a flat setback (it's the fallback if the app stops).

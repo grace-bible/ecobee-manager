@@ -17,6 +17,7 @@ from sqlalchemy import (
     Time,
     UniqueConstraint,
     false,
+    true,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -41,6 +42,8 @@ class Campus(Base):
     timezone: Mapped[str] = mapped_column(String(64), default="America/Chicago")
     # Live = holds are really sent (when DRY_RUN is off). New campuses start in dry run.
     live: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # Google Chat incoming webhook for this campus's alerts (else the app-wide one).
+    chat_webhook: Mapped[str | None] = mapped_column(String(500))
 
     zones: Mapped[list["Zone"]] = relationship(back_populates="campus")
     thermostats: Mapped[list["Thermostat"]] = relationship(back_populates="campus")
@@ -123,6 +126,12 @@ class Room(Base):
     # Google Workspace resource calendar (resourceEmail, c_…@resource.calendar.google.com)
     calendar_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     capacity: Mapped[int | None] = mapped_column(Integer)
+    # Booking rules: does this room's calendar drive HVAC at all; skip short or tentative
+    # bookings.
+    drives_hvac: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    min_booking_minutes: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    ignore_tentative: Mapped[bool] = mapped_column(Boolean, default=False,
+                                                   server_default=false())
 
     campus: Mapped[Campus] = relationship(back_populates="rooms")
     building: Mapped["Building | None"] = relationship(back_populates="rooms")
@@ -148,6 +157,13 @@ class Zone(Base):
     building_id: Mapped[int | None] = mapped_column(ForeignKey("building.id", ondelete="SET NULL"))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     live: Mapped[bool | None] = mapped_column(Boolean)  # None = follow the campus
+    # A comfort profile owns the setpoints and lead/tail when set (they're copied here so
+    # everything reads the zone's own columns).
+    profile_id: Mapped[int | None] = mapped_column(
+        ForeignKey("comfort_profile.id", ondelete="SET NULL"))
+    # Learned lead: lead_minutes is set nightly from recent time-to-target (history).
+    lead_auto: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    lead_learned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Bookings in any of the zone's rooms start conditioning this early / keep it this long.
     lead_minutes: Mapped[int] = mapped_column(Integer, default=45)
@@ -164,6 +180,7 @@ class Zone(Base):
     thermostats: Mapped[list[Thermostat]] = relationship(back_populates="zone")
     groups: Mapped[list["ZoneGroup"]] = relationship(secondary=group_zone, back_populates="zones")
     building: Mapped[Building | None] = relationship(back_populates="zones")
+    profile: Mapped["ComfortProfile | None"] = relationship(back_populates="zones")
     rooms: Mapped[list[Room]] = relationship(secondary=zone_room, back_populates="zones",
                                              order_by="Room.name")
 
@@ -197,6 +214,9 @@ class ScheduleBlock(Base):
     heat: Mapped[float | None] = mapped_column(Float)  # only for mode=custom
     cool: Mapped[float | None] = mapped_column(Float)
     label: Mapped[str | None] = mapped_column(String(100))
+    # Only between these month-days each year ("MM-DD"), e.g. a summer schedule.
+    season_start: Mapped[str | None] = mapped_column(String(5))
+    season_end: Mapped[str | None] = mapped_column(String(5))
 
 
 class Override(Base):
@@ -296,6 +316,7 @@ class Alert(Base):
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     notified: Mapped[bool] = mapped_column(Boolean, default=False)
+    campus_id: Mapped[int | None] = mapped_column(Integer)  # routes it to the campus's chat
 
 
 class RuntimeSample(Base):
@@ -337,4 +358,28 @@ class SpecialDay(Base):
     closed_mode: Mapped[str] = mapped_column(String(16), default="unoccupied")
     ignore_bookings: Mapped[bool] = mapped_column(Boolean, default=False)
     label: Mapped[str | None] = mapped_column(String(100))
+
+
+SETPOINT_FIELDS = ("occupied_heat", "occupied_cool", "unoccupied_heat", "unoccupied_cool",
+                   "min_setpoint", "max_setpoint", "lead_minutes", "tail_minutes")
+
+
+class ComfortProfile(Base):
+    """Named comfort settings ("Offices", "Worship spaces") shared by many zones. Zones using
+    a profile follow it; editing the profile updates all of them."""
+
+    __tablename__ = "comfort_profile"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campus_id: Mapped[int | None] = mapped_column(ForeignKey("campus.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(100))
+    occupied_heat: Mapped[float] = mapped_column(Float, default=68)
+    occupied_cool: Mapped[float] = mapped_column(Float, default=72)
+    unoccupied_heat: Mapped[float] = mapped_column(Float, default=60)
+    unoccupied_cool: Mapped[float] = mapped_column(Float, default=82)
+    min_setpoint: Mapped[float] = mapped_column(Float, default=60)
+    max_setpoint: Mapped[float] = mapped_column(Float, default=85)
+    lead_minutes: Mapped[int] = mapped_column(Integer, default=45)
+    tail_minutes: Mapped[int] = mapped_column(Integer, default=15)
+
+    zones: Mapped[list[Zone]] = relationship(back_populates="profile")
 

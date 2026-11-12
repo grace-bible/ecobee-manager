@@ -36,12 +36,14 @@ from app.insights import (
     time_to_target_summary,
 )
 from app.models import (
+    SETPOINT_FIELDS,
     Alert,
     ApiKey,
     AppUser,
     AuditLog,
     Building,
     Campus,
+    ComfortProfile,
     Override,
     Room,
     ScheduleBlock,
@@ -65,9 +67,13 @@ class CampusIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     timezone: str = "America/Chicago"
     live: bool | None = None  # None = leave as is (new campuses start in dry run)
+    chat_webhook: str | None = None  # None = leave as is; "" = clear (use the app-wide one)
 
     @model_validator(mode="after")
     def _check(self):
+        if self.chat_webhook and not self.chat_webhook.startswith(
+                "https://chat.googleapis.com/"):
+            raise ValueError("the Chat webhook should start with https://chat.googleapis.com/")
         try:
             ZoneInfo(self.timezone)
         except (ZoneInfoNotFoundError, ValueError) as err:
@@ -91,6 +97,9 @@ class RoomIn(BaseModel):
     calendar_id: str | None = None  # Google room calendar (resourceEmail)
     capacity: int | None = None
     zone_ids: list[int] | None = None  # None = leave the room's zones as they are
+    drives_hvac: bool = True  # False: bookings here never heat or cool its zones
+    min_booking_minutes: int = Field(0, ge=0, le=480)  # skip shorter bookings
+    ignore_tentative: bool = False
 
 
 class SpecialDayIn(BaseModel):
@@ -144,6 +153,8 @@ class ZoneIn(BaseModel):
     building_id: int | None = None
     enabled: bool = True
     live: bool | None = None  # None = follow the campus
+    profile_id: int | None = None  # a comfort profile owns setpoints and lead/tail
+    lead_auto: bool = False  # learn lead_minutes from history
     room_ids: list[int] | None = None  # None = leave the zone's rooms as they are
     lead_minutes: int = Field(45, ge=0, le=240)
     tail_minutes: int = Field(15, ge=0, le=240)
@@ -198,9 +209,19 @@ class BlockIn(BaseModel):
     heat: float | None = None
     cool: float | None = None
     label: str | None = None
+    season_start: str | None = None  # "MM-DD": only between these dates each year
+    season_end: str | None = None
 
     @model_validator(mode="after")
     def _check(self):
+        if bool(self.season_start) != bool(self.season_end):
+            raise ValueError("a season needs both a start and an end date")
+        for v in (self.season_start, self.season_end):
+            if v:
+                try:
+                    datetime.strptime(f"2024-{v}", "%Y-%m-%d")  # leap year: allows 02-29
+                except ValueError as err:
+                    raise ValueError(f"season dates are MM-DD, got {v!r}") from err
         if sum(x is not None for x in (self.zone_id, self.group_id, self.building_id)) != 1:
             raise ValueError("give exactly one of zone_id, group_id or building_id")
         for v in (self.start, self.end):
@@ -285,7 +306,8 @@ def block_dict(b: ScheduleBlock) -> dict:
     return {"id": b.id, "zone_id": b.zone_id, "group_id": b.group_id,
             "building_id": b.building_id, "weekdays": b.weekdays,
             "start": b.start.strftime("%H:%M"), "end": b.end.strftime("%H:%M"), "mode": b.mode,
-            "heat": b.heat, "cool": b.cool, "label": b.label}
+            "heat": b.heat, "cool": b.cool, "label": b.label,
+            "season_start": b.season_start, "season_end": b.season_end}
 
 
 def thermostat_dict(t: Thermostat) -> dict:
@@ -302,7 +324,8 @@ def thermostat_dict(t: Thermostat) -> dict:
 
 def zone_dict(z: Zone) -> dict:
     return {c: getattr(z, c) for c in (
-        "id", "name", "campus_id", "building_id", "enabled", "live", "lead_minutes",
+        "id", "name", "campus_id", "building_id", "enabled", "live", "profile_id", "lead_auto",
+        "lead_minutes",
         "tail_minutes", "occupied_heat", "occupied_cool", "unoccupied_heat", "unoccupied_cool",
         "min_setpoint", "max_setpoint")} | {"thermostat_ids": [t.id for t in z.thermostats],
                                             "room_ids": [r.id for r in z.rooms],
@@ -318,6 +341,8 @@ def building_dict(b: Building) -> dict:
 def room_dict(r: Room) -> dict:
     return {"id": r.id, "name": r.name, "campus_id": r.campus_id, "building_id": r.building_id,
             "calendar_id": r.calendar_id, "capacity": r.capacity,
+            "drives_hvac": r.drives_hvac, "min_booking_minutes": r.min_booking_minutes,
+            "ignore_tentative": r.ignore_tentative,
             "zone_ids": [z.id for z in r.zones]}
 
 
@@ -428,7 +453,8 @@ def me(p: Principal = Depends(current_principal)):
 
 @router.get("/campuses")
 def list_campuses(db: Session = Depends(get_db), _=Depends(current_principal)):
-    return [{"id": c.id, "name": c.name, "timezone": c.timezone, "live": c.live}
+    return [{"id": c.id, "name": c.name, "timezone": c.timezone, "live": c.live,
+             "has_chat_webhook": bool(c.chat_webhook)}
             for c in db.scalars(select(Campus).order_by(Campus.name))]
 
 
@@ -579,7 +605,10 @@ def update_campus(campus_id: int, body: CampusIn, db: Session = Depends(get_db),
         audit(db, p, "campus_live" if body.live else "campus_dry_run", c.name)
         c.live = body.live
     c.name, c.timezone = body.name, body.timezone
-    audit(db, p, "update_campus", c.name, body.model_dump())
+    if body.chat_webhook is not None:
+        c.chat_webhook = body.chat_webhook.strip() or None
+    audit(db, p, "update_campus", c.name, body.model_dump(exclude={"chat_webhook"}) | {
+        "chat_webhook": "set" if c.chat_webhook else "none"})
     return {"id": c.id, "name": c.name, "timezone": c.timezone, "live": c.live}
 
 
@@ -629,6 +658,11 @@ def _apply_zone(db: Session, z: Zone, body: ZoneIn):
         _same_campus(db.get(Building, body.building_id), body.campus_id, "building")
     for k, v in body.model_dump(exclude={"thermostat_ids", "room_ids"}).items():
         setattr(z, k, v)
+    if body.profile_id is not None:
+        prof = db.get(ComfortProfile, body.profile_id)
+        if not prof or prof.campus_id not in (None, body.campus_id):
+            raise HTTPException(400, "that comfort profile isn't available on this campus")
+        _copy_profile(prof, z)
     if body.room_ids is not None:
         z.rooms = [_same_campus(db.get(Room, rid), body.campus_id, f"room {rid}")
                    for rid in body.room_ids]
@@ -697,6 +731,98 @@ def health_checks(db: Session) -> list[dict]:
 @router.get("/health-checks")
 def get_health_checks(db: Session = Depends(get_db), _=Depends(current_principal)):
     return health_checks(db)
+
+
+# ---------- comfort profiles ----------
+
+class ProfileIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    campus_id: int | None = None  # None = available on every campus (admins only)
+    occupied_heat: float = 68
+    occupied_cool: float = 72
+    unoccupied_heat: float = 60
+    unoccupied_cool: float = 82
+    min_setpoint: float = Field(60, ge=45, le=92)
+    max_setpoint: float = Field(85, ge=45, le=92)
+    lead_minutes: int = Field(45, ge=0, le=240)
+    tail_minutes: int = Field(15, ge=0, le=240)
+
+    @model_validator(mode="after")
+    def _check(self):
+        if self.min_setpoint >= self.max_setpoint:
+            raise ValueError("never below must be under never above")
+        return self
+
+
+def _copy_profile(prof: ComfortProfile, z: Zone) -> None:
+    for f in SETPOINT_FIELDS:
+        if f == "lead_minutes" and z.lead_auto:
+            continue  # a learned lead keeps its own value
+        setattr(z, f, getattr(prof, f))
+
+
+def profile_dict(pr: ComfortProfile) -> dict:
+    return {"id": pr.id, "name": pr.name, "campus_id": pr.campus_id,
+            "zone_ids": [z.id for z in pr.zones]} | {f: getattr(pr, f) for f in SETPOINT_FIELDS}
+
+
+def _profile_scope(p: Principal, campus_id: int | None):
+    if campus_id is None:
+        if p.role != "admin":
+            raise HTTPException(403, "only admins can change profiles shared by every campus")
+    else:
+        _check_campus(p, campus_id)
+
+
+@router.get("/comfort-profiles")
+def list_profiles(db: Session = Depends(get_db), _=Depends(current_principal)):
+    return [profile_dict(x) for x in db.scalars(select(ComfortProfile)
+                                                .order_by(ComfortProfile.name))]
+
+
+@router.post("/comfort-profiles", status_code=201)
+def create_profile(body: ProfileIn, db: Session = Depends(get_db), p=Depends(require_write)):
+    _profile_scope(p, body.campus_id)
+    _name_free(db, ComfortProfile, body.name, what="comfort profile")
+    pr = ComfortProfile(**body.model_dump())
+    db.add(pr)
+    db.flush()
+    audit(db, p, "create_profile", pr.name, body.model_dump())
+    return {"id": pr.id}
+
+
+@router.put("/comfort-profiles/{profile_id}")
+def update_profile(profile_id: int, body: ProfileIn, db: Session = Depends(get_db),
+                   p=Depends(require_write)):
+    """Saving a profile updates every zone that uses it."""
+    pr = db.get(ComfortProfile, profile_id)
+    if not pr:
+        raise HTTPException(404, "comfort profile not found")
+    _profile_scope(p, pr.campus_id)
+    _profile_scope(p, body.campus_id)
+    _name_free(db, ComfortProfile, body.name, pr.id, what="comfort profile")
+    for z in pr.zones:
+        _check_campus(p, z.campus_id)
+        if body.campus_id not in (None, z.campus_id):
+            raise HTTPException(400, f"zone {z.name!r} on another campus uses this profile")
+    for k, v in body.model_dump().items():
+        setattr(pr, k, v)
+    for z in pr.zones:
+        _copy_profile(pr, z)
+    audit(db, p, "update_profile", pr.name, body.model_dump() | {"zones": len(pr.zones)})
+    return profile_dict(pr)
+
+
+@router.delete("/comfort-profiles/{profile_id}")
+def delete_profile(profile_id: int, db: Session = Depends(get_db), p=Depends(require_write)):
+    """Zones keep their current settings (as their own)."""
+    pr = db.get(ComfortProfile, profile_id)
+    if not pr:
+        raise HTTPException(404, "comfort profile not found")
+    _profile_scope(p, pr.campus_id)
+    db.delete(pr)
+    audit(db, p, "delete_profile", pr.name)
+    return {"ok": True}
 
 
 # ---------- special days ----------
@@ -827,6 +953,8 @@ def _apply_room(db: Session, p: Principal, r: Room, body: RoomIn):
             raise HTTPException(409, f"that calendar already belongs to {other.name!r}")
     r.name, r.campus_id, r.building_id = body.name, body.campus_id, body.building_id
     r.calendar_id, r.capacity = body.calendar_id or None, body.capacity
+    r.drives_hvac, r.min_booking_minutes = body.drives_hvac, body.min_booking_minutes
+    r.ignore_tentative = body.ignore_tentative
     if body.zone_ids is not None:
         zones = [_same_campus(db.get(Zone, zid), body.campus_id, f"zone {zid}")
                  for zid in body.zone_ids]
@@ -982,7 +1110,8 @@ def create_block(body: BlockIn, db: Session = Depends(get_db), p=Depends(require
     b = ScheduleBlock(zone_id=body.zone_id, group_id=body.group_id,
                       building_id=body.building_id, weekdays=body.weekdays,
                       start=time.fromisoformat(body.start), end=time.fromisoformat(body.end),
-                      mode=body.mode, heat=body.heat, cool=body.cool, label=body.label)
+                      mode=body.mode, heat=body.heat, cool=body.cool, label=body.label,
+                      season_start=body.season_start, season_end=body.season_end)
     db.add(b)
     db.flush()
     audit(db, p, "create_schedule_block", body.label or f"block {b.id}", body.model_dump())
@@ -1055,11 +1184,12 @@ def ecobee_login(body: LoginIn, p=Depends(require_admin)):
 
 
 @router.post("/jobs/{job}")
-def run_job(job: Literal["poll", "calendar", "reconcile", "alerts", "history"],
+def run_job(job: Literal["poll", "calendar", "reconcile", "alerts", "history", "lead"],
             p=Depends(require_admin)):
+    from app import lead
     fn = {"poll": poller.poll_once, "calendar": gcal.sync_all,
           "reconcile": reconciler.reconcile_once, "alerts": alerts.check_once,
-          "history": history.sync_once}[job]
+          "history": history.sync_once, "lead": lead.learn_once}[job]
     return fn()
 
 

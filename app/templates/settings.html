@@ -93,7 +93,7 @@
 
 <h2>Run now</h2>
 <div class="panel bulk">
-  {% for job in ['poll', 'calendar', 'reconcile', 'alerts', 'history'] %}
+  {% for job in ['poll', 'calendar', 'reconcile', 'alerts', 'history', 'lead'] %}
     <form class="inline" method="post" action="/settings/run/{{ job }}"><button class="secondary">{{ job }}</button></form>
   {% endfor %}
 </div>

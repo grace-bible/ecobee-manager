@@ -71,6 +71,9 @@ class BlockIn:
     cool: float | None = None
     level: int = 0  # 0 = zone, 1 = group, 2 = building (lower wins)
     id: int | None = None
+    # Only between these month-days each year, e.g. ("06-01", "08-14") for summer;
+    # may wrap over New Year ("08-15", "05-31"). None = all year.
+    season: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -158,13 +161,21 @@ def apply_guardrails(d: Desired, z: ZoneCfg, deadband: float = 4.0) -> Desired:
     return d
 
 
+def _in_season(b: BlockIn, d: date) -> bool:
+    if not b.season:
+        return True
+    md, (first, last) = d.strftime("%m-%d"), b.season
+    return first <= md <= last if first <= last else (md >= first or md <= last)
+
+
 def _block_active(b: BlockIn, local: datetime) -> bool:
     t = local.time()
-    today = bool(b.weekdays & WEEKDAY_BITS[local.weekday()])
+    today = bool(b.weekdays & WEEKDAY_BITS[local.weekday()]) and _in_season(b, local.date())
     if b.end > b.start:
         return today and b.start <= t < b.end
     # Overnight block (e.g. 22:00–02:00): tonight's part, or the tail of yesterday's.
-    yesterday = bool(b.weekdays & WEEKDAY_BITS[(local.weekday() - 1) % 7])
+    prev = local.date() - timedelta(days=1)
+    yesterday = bool(b.weekdays & WEEKDAY_BITS[prev.weekday()]) and _in_season(b, prev)
     return (today and t >= b.start) or (yesterday and t < b.end)
 
 

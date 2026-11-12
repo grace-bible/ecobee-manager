@@ -11,7 +11,8 @@
     <h1>{{ building.name }}</h1>
     <p class="muted" style="margin:0">{{ building.zones | length }} zone{{ 's' if building.zones | length != 1 }} · {{ building.rooms | length }} room{{ 's' if building.rooms | length != 1 }}</p>
   </div>
-  {% if can_change %}<div class="building-actions">{{ ui.quick_actions('building', building.id, building.name) }}</div>{% endif %}
+  <div class="building-actions"><a class="button secondary small" href="/buildings/{{ building.id }}/week">Week view</a>
+  {% if can_change %}{{ ui.quick_actions('building', building.id, building.name) }}{% endif %}</div>
 </div>
 
 <div class="rooms">

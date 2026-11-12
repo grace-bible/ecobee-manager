@@ -31,6 +31,9 @@ spaces. One container + Postgres; web UI and REST API; zones follow Google Works
   arms the app; then each campus goes live on its own (Setup → campus → Go live).
 - **Closures and special hours** per campus or building replace the weekly schedule on
   those days; a whole-campus override handles a snow day.
+- **At scale:** comfort profiles shared by many zones, seasonal schedule blocks (e.g. a
+  summer schedule), per-room booking rules, a learned warm-up/cool-down lead per zone,
+  alerts routed to each campus's Google Chat space, and a week view per building.
 - **Roles:** admin, campus manager (setup and schedules on their campuses), operator
   (temporary changes only, on their campuses), viewer.
 

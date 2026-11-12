@@ -1,0 +1,59 @@
+{% extends "setup_layout.html" %}
+{% block title %}Comfort profiles{% endblock %}
+{% macro fields(pr) %}
+  <div class="formgrid">
+    <label>In use: heat to <input type="number" step="0.5" name="occupied_heat" value="{{ pr.occupied_heat if pr else 68 }}"></label>
+    <label>In use: cool to <input type="number" step="0.5" name="occupied_cool" value="{{ pr.occupied_cool if pr else 72 }}"></label>
+    <label>Empty: heat to <input type="number" step="0.5" name="unoccupied_heat" value="{{ pr.unoccupied_heat if pr else 60 }}"></label>
+    <label>Empty: cool to <input type="number" step="0.5" name="unoccupied_cool" value="{{ pr.unoccupied_cool if pr else 82 }}"></label>
+    <label>Never below <input type="number" step="0.5" name="min_setpoint" value="{{ pr.min_setpoint if pr else 60 }}"></label>
+    <label>Never above <input type="number" step="0.5" name="max_setpoint" value="{{ pr.max_setpoint if pr else 85 }}"></label>
+    <label>Start before a booking (min) <input type="number" name="lead_minutes" min="0" max="240" value="{{ pr.lead_minutes if pr else 45 }}"></label>
+    <label>Keep going after (min) <input type="number" name="tail_minutes" min="0" max="240" value="{{ pr.tail_minutes if pr else 15 }}"></label>
+  </div>
+{% endmacro %}
+{% block detail %}
+<div class="pagehead"><div>
+  <div class="crumbs"><a href="/setup">Places</a></div>
+  <h1>Comfort profiles</h1>
+  <p class="muted" style="margin:0;max-width:680px">Shared comfort settings, like "Offices" or "Worship spaces". Zones that use a profile follow it, so changing the profile here updates all of them at once. Zones can still have their own settings instead.</p>
+</div></div>
+
+{% for pr in profiles %}
+<details class="panel profile" {% if loop.length == 1 %}open{% endif %}>
+  <summary><strong>{{ pr.name }}</strong>
+    <span class="muted"> · {{ pr.occupied_heat | deg }}–{{ pr.occupied_cool | deg }}° in use, {{ pr.unoccupied_heat | deg }}–{{ pr.unoccupied_cool | deg }}° empty · {{ pr.zones | length }} zone{{ 's' if pr.zones | length != 1 }}{% if pr.campus_id %} · {{ (tree | selectattr('id', 'equalto', pr.campus_id) | first).name }} only{% endif %}</span></summary>
+  {% set can = me.can_write and (me.role == 'admin' if pr.campus_id is none else me.may_touch_campus(pr.campus_id)) %}
+  <form method="post" action="/comfort-profiles/{{ pr.id }}" style="margin-top:14px">
+    <div class="formgrid">
+      <label>Name <input name="name" required value="{{ pr.name }}"></label>
+      <label>Available on
+        <select name="campus_id"><option value="">Every campus</option>
+          {% for c in tree %}<option value="{{ c.id }}" {% if pr.campus_id == c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></label>
+    </div>
+    <div style="height:12px"></div>
+    {{ fields(pr) }}
+    {% if pr.zones %}<p class="muted" style="font-size:13px">Used by {% for z in pr.zones %}<a href="/zones/{{ z.id }}/edit">{{ z.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}. Saving updates them all.</p>{% endif %}
+    {% if can %}<div class="formfoot"><button>Save profile</button>
+      <button class="danger small" formaction="/comfort-profiles/{{ pr.id }}/delete" onclick="return confirm('Remove {{ pr.name }}? Its zones keep their current settings as their own.')">Remove</button></div>{% endif %}
+  </form>
+</details>
+{% else %}
+<div class="panel muted">No profiles yet. Add one below, then pick it in each zone's settings.</div>
+{% endfor %}
+
+{% if me.can_write %}
+<h2>Add a profile</h2>
+<form class="panel" method="post" action="/comfort-profiles">
+  <div class="formgrid">
+    <label>Name <input name="name" required placeholder="e.g. Offices"></label>
+    <label>Available on
+      <select name="campus_id">{% if me.role == 'admin' %}<option value="">Every campus</option>{% endif %}
+        {% for c in tree if me.may_touch_campus(c.id) %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}</select></label>
+  </div>
+  <div style="height:12px"></div>
+  {{ fields(none) }}
+  <div class="formfoot"><button>Add profile</button></div>
+</form>
+{% endif %}
+{% endblock %}

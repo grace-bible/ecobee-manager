@@ -128,7 +128,7 @@ def gather(now: datetime) -> dict[str, tuple[str, str]]:
         managed: set[int] = set()
         zones = s.scalars(select(Zone).where(Zone.enabled.is_(True)).options(
             selectinload(Zone.thermostats), selectinload(Zone.groups),
-            selectinload(Zone.campus))).all()
+            selectinload(Zone.campus), selectinload(Zone.rooms))).all()
         for z in zones:
             cfg = zone_cfg(z)
             # Look back far enough that blocks/events that began an hour ago are included.
@@ -150,7 +150,7 @@ def gather(now: datetime) -> dict[str, tuple[str, str]]:
 
         creds = s.get(EcobeeCredentials, 1)
         ecobee_error = creds.last_error if creds else None
-        wanted = {z.calendar_id for z in zones if z.calendar_id}
+        wanted = {c for z in zones for c in z.calendar_ids}
         syncs = [SyncIn(r.calendar_id, aware(r.last_success), r.last_error)
                  for r in s.scalars(select(CalendarSyncState)) if r.calendar_id in wanted]
 

@@ -40,6 +40,25 @@ class Campus(Base):
 
     zones: Mapped[list["Zone"]] = relationship(back_populates="campus")
     thermostats: Mapped[list["Thermostat"]] = relationship(back_populates="campus")
+    buildings: Mapped[list["Building"]] = relationship(back_populates="campus",
+                                                       order_by="Building.name")
+    rooms: Mapped[list["Room"]] = relationship(back_populates="campus", order_by="Room.name")
+
+
+class Building(Base):
+    """A building on a campus. Zones and rooms live in one; it can be overridden or given a
+    weekly schedule as a whole (below zone and group settings)."""
+
+    __tablename__ = "building"
+    __table_args__ = (UniqueConstraint("campus_id", "name"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campus_id: Mapped[int] = mapped_column(ForeignKey("campus.id"))
+    name: Mapped[str] = mapped_column(String(100))
+    google_building_id: Mapped[str | None] = mapped_column(String(100))  # Workspace buildingId
+
+    campus: Mapped[Campus] = relationship(back_populates="buildings")
+    zones: Mapped[list["Zone"]] = relationship(back_populates="building", order_by="Zone.name")
+    rooms: Mapped[list["Room"]] = relationship(back_populates="building", order_by="Room.name")
 
 
 class Thermostat(Base):
@@ -76,6 +95,33 @@ class Thermostat(Base):
     zone: Mapped["Zone | None"] = relationship(back_populates="thermostats")
 
 
+zone_room = Table(
+    "zone_room",
+    Base.metadata,
+    Column("zone_id", ForeignKey("zone.id", ondelete="CASCADE"), primary_key=True),
+    Column("room_id", ForeignKey("room.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+class Room(Base):
+    """A bookable space with its own Google room calendar. Served by one or more zones
+    (usually one); a zone is "booked" when any of its rooms is."""
+
+    __tablename__ = "room"
+    __table_args__ = (UniqueConstraint("campus_id", "name"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campus_id: Mapped[int] = mapped_column(ForeignKey("campus.id"))
+    building_id: Mapped[int | None] = mapped_column(ForeignKey("building.id", ondelete="SET NULL"))
+    name: Mapped[str] = mapped_column(String(100))
+    # Google Workspace resource calendar (resourceEmail, c_…@resource.calendar.google.com)
+    calendar_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    capacity: Mapped[int | None] = mapped_column(Integer)
+
+    campus: Mapped[Campus] = relationship(back_populates="rooms")
+    building: Mapped["Building | None"] = relationship(back_populates="rooms")
+    zones: Mapped[list["Zone"]] = relationship(secondary=zone_room, back_populates="rooms")
+
+
 group_zone = Table(
     "group_zone",
     Base.metadata,
@@ -85,17 +131,17 @@ group_zone = Table(
 
 
 class Zone(Base):
-    """A conditioned space: one or more thermostats, optionally tied to a room calendar."""
+    """What the HVAC controls: one or more thermostats that move together, with their own
+    comfort settings and schedule. Serves one or more rooms, whose calendars drive it."""
 
     __tablename__ = "zone"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100))
     campus_id: Mapped[int] = mapped_column(ForeignKey("campus.id"))
+    building_id: Mapped[int | None] = mapped_column(ForeignKey("building.id", ondelete="SET NULL"))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    # Google Workspace resource calendar (resourceEmail, e.g. c_1888...@resource.calendar.google.com)
-    calendar_id: Mapped[str | None] = mapped_column(String(255), index=True)
-    calendar_name: Mapped[str | None] = mapped_column(String(255))
+    # Bookings in any of the zone's rooms start conditioning this early / keep it this long.
     lead_minutes: Mapped[int] = mapped_column(Integer, default=45)
     tail_minutes: Mapped[int] = mapped_column(Integer, default=15)
 
@@ -109,8 +155,15 @@ class Zone(Base):
     campus: Mapped[Campus] = relationship(back_populates="zones")
     thermostats: Mapped[list[Thermostat]] = relationship(back_populates="zone")
     groups: Mapped[list["ZoneGroup"]] = relationship(secondary=group_zone, back_populates="zones")
+    building: Mapped[Building | None] = relationship(back_populates="zones")
+    rooms: Mapped[list[Room]] = relationship(secondary=zone_room, back_populates="zones",
+                                             order_by="Room.name")
 
     __table_args__ = (UniqueConstraint("campus_id", "name"),)
+
+    @property
+    def calendar_ids(self) -> list[str]:
+        return sorted({r.calendar_id for r in self.rooms if r.calendar_id})
 
 
 class ZoneGroup(Base):
@@ -122,12 +175,13 @@ class ZoneGroup(Base):
 
 
 class ScheduleBlock(Base):
-    """Weekly recurring occupancy for a zone or a group (exactly one set)."""
+    """Weekly recurring occupancy for a zone, group or building (exactly one set)."""
 
     __tablename__ = "schedule_block"
     id: Mapped[int] = mapped_column(primary_key=True)
     zone_id: Mapped[int | None] = mapped_column(ForeignKey("zone.id", ondelete="CASCADE"))
     group_id: Mapped[int | None] = mapped_column(ForeignKey("zone_group.id", ondelete="CASCADE"))
+    building_id: Mapped[int | None] = mapped_column(ForeignKey("building.id", ondelete="CASCADE"))
     weekdays: Mapped[int] = mapped_column(Integer)  # bitmask, Mon=1 … Sun=64
     start: Mapped[time] = mapped_column(Time)
     end: Mapped[time] = mapped_column(Time)
@@ -145,6 +199,7 @@ class Override(Base):
     thermostat_id: Mapped[int | None] = mapped_column(ForeignKey("thermostat.id", ondelete="CASCADE"))
     zone_id: Mapped[int | None] = mapped_column(ForeignKey("zone.id", ondelete="CASCADE"))
     group_id: Mapped[int | None] = mapped_column(ForeignKey("zone_group.id", ondelete="CASCADE"))
+    building_id: Mapped[int | None] = mapped_column(ForeignKey("building.id", ondelete="CASCADE"))
     mode: Mapped[str] = mapped_column(String(16), default="custom")  # occupied/unoccupied/off/custom
     heat: Mapped[float | None] = mapped_column(Float)
     cool: Mapped[float | None] = mapped_column(Float)

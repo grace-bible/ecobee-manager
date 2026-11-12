@@ -83,12 +83,15 @@ once by hand) — that's the fallback.
 | Table | Purpose / key fields |
 |---|---|
 | `campus` | name, timezone |
+| `building` | campus_id, name, Workspace `google_building_id` (from the room import) |
+| `room` | campus_id, building_id, name, **`calendar_id`** (Google resource calendar, unique), capacity — what people book |
+| `zone_room` | many-to-many: a zone serves one or more rooms (usually a room has one zone; a hall on two units has two) |
 | `thermostat` | ecobee `identifier`, name, model, campus_id, last-known state (temp, setpoints, mode, running equipment, connected), `last_seen` |
-| `zone` | name, campus_id, **`calendar_id`** (Google resource calendar email, nullable), `lead_minutes`, `tail_minutes`, occupied/unoccupied heat & cool setpoints, `min_setpoint`, `max_setpoint`, `enabled` |
+| `zone` | what the HVAC controls: name, campus_id, building_id, `lead_minutes`, `tail_minutes`, occupied/unoccupied heat & cool setpoints, `min_setpoint`, `max_setpoint`, `enabled`. Its rooms' calendars drive it |
 | `zone_thermostat` | many-to-many (a big room can have several thermostats; a thermostat belongs to one zone) |
-| `group` / `group_zone` | arbitrary groupings of zones (campus, building, "Kids wing") |
-| `schedule_block` | owner (zone or group), weekday mask, start, end, mode: `occupied` / `unoccupied` / `off` / custom setpoints |
-| `override` | target (thermostat/zone/group), setpoints or mode, `starts_at`, `ends_at`, created_by, reason |
+| `group` / `group_zone` | groupings of zones that cut across buildings ("All kids rooms", "Sunday morning") |
+| `schedule_block` | owner (zone, group or building), weekday mask, start, end, mode: `occupied` / `unoccupied` / `off` / custom setpoints |
+| `override` | target (thermostat/zone/group/building), setpoints or mode, `starts_at`, `ends_at`, created_by, reason |
 | `calendar_event` | calendar_id, Google event id, start/end, title, status, `hvac_tag` parsed from title/description |
 | `calendar_sync_state` | calendar_id, `sync_token`, last success/error |
 | `audit_log` | who, when, what, source (`ui`/`api`/`calendar`/`schedule`), before/after |
@@ -102,10 +105,11 @@ once by hand) — that's the fallback.
 Every minute the **resolver** computes each zone's desired state *for now* by
 taking the highest-priority active source:
 
-1. **Manual override** (thermostat > zone > group, newest wins within a level)
-2. **Calendar occupancy** — any confirmed event on the zone's resource calendar
-   overlapping `[now + lead, now - tail]` → `occupied`
-3. **Schedule block** — zone blocks, then group blocks
+1. **Manual override** (thermostat > zone > group > building, newest wins within a level)
+2. **Calendar occupancy** — any confirmed event on any of the zone's rooms' calendars
+   overlapping `[now + lead, now - tail]` → `occupied` (an event booked in several of
+   the zone's rooms counts once)
+3. **Schedule block** — zone blocks, then group blocks, then building blocks
 4. **Default** → `unoccupied` setpoints for that zone
 
 Then **guardrails** clamp setpoints to the zone's `[min, max]`, enforce a

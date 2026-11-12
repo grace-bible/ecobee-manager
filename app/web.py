@@ -19,16 +19,19 @@ from app.charts import room_chart
 from app.config import get_settings
 from app.db import get_db
 from app.ecobee.backend import AuthRequired, BackendError
+from app.insights import downsample
 from app.models import (
     Alert,
     ApiKey,
     AppUser,
     AuditLog,
+    Building,
     CalendarEvent,
     CalendarSyncState,
     Campus,
     EcobeeCredentials,
     Override,
+    Room,
     ScheduleBlock,
     Thermostat,
     Zone,
@@ -91,13 +94,20 @@ def _back(request: Request, fallback: str = "/") -> RedirectResponse:
     return RedirectResponse(request.headers.get("referer") or fallback, status_code=303)
 
 
+def _campus_tree(db: Session, campus: int | None = None):
+    q = select(Campus).order_by(Campus.name).options(
+        selectinload(Campus.zones).selectinload(Zone.thermostats),
+        selectinload(Campus.zones).selectinload(Zone.rooms),
+        selectinload(Campus.buildings), selectinload(Campus.rooms))
+    campuses = db.scalars(q).all()
+    return campuses, [c for c in campuses if campus is None or c.id == campus]
+
+
 @router.get("/", response_class=HTMLResponse)
 def rooms(request: Request, campus: int | None = None, db: Session = Depends(get_db),
           p: Principal = Depends(current_principal)):
-    """The everyday screen: every room, what it's doing, and one-tap changes."""
-    campuses = db.scalars(select(Campus).order_by(Campus.name).options(
-        selectinload(Campus.zones).selectinload(Zone.thermostats))).all()
-    shown = [c for c in campuses if campus is None or c.id == campus]
+    """The everyday screen: campus → building → zone cards, with one-tap changes."""
+    campuses, shown = _campus_tree(db, campus)
     now = utcnow()
     status = {z.id: api.zone_status(db, z, now) for c in shown for z in c.zones if z.enabled}
     groups = db.scalars(select(ZoneGroup).order_by(ZoneGroup.name)
@@ -108,6 +118,21 @@ def rooms(request: Request, campus: int | None = None, db: Session = Depends(get
                            .where(Thermostat.zone_id.is_(None)))
     return render(request, "rooms.html", p, campuses=campuses, shown=shown, status=status,
                   groups=groups, campus=campus, unassigned=unassigned)
+
+
+@router.get("/buildings/{building_id}", response_class=HTMLResponse)
+def building_page(request: Request, building_id: int, db: Session = Depends(get_db),
+                  p: Principal = Depends(current_principal)):
+    b = db.get(Building, building_id)
+    if not b:
+        raise HTTPException(404)
+    now = utcnow()
+    blocks = db.scalars(select(ScheduleBlock).where(ScheduleBlock.building_id == b.id)
+                        .order_by(ScheduleBlock.start)).all()
+    return render(request, "building.html", p, building=b,
+                  status={z.id: api.zone_status(db, z, now) for z in b.zones if z.enabled},
+                  blocks=[api.block_dict(x) for x in blocks],
+                  editable=p.can_write and p.may_touch_campus(b.campus_id))
 
 
 @router.get("/insights", response_class=HTMLResponse)
@@ -129,17 +154,20 @@ def insights_page(request: Request, days: int = 7, db: Session = Depends(get_db)
 @router.get("/setup", response_class=HTMLResponse)
 def setup_page(request: Request, db: Session = Depends(get_db),
                p: Principal = Depends(current_principal)):
-    campuses = db.scalars(select(Campus).order_by(Campus.name).options(
-        selectinload(Campus.zones).selectinload(Zone.thermostats))).all()
+    campuses, _ = _campus_tree(db)
     unassigned = db.scalars(select(Thermostat).where(Thermostat.zone_id.is_(None))
                             .order_by(Thermostat.name)).all()
-    return render(request, "setup.html", p, campuses=campuses, unassigned=unassigned)
+    return render(request, "setup.html", p, campuses=campuses, unassigned=unassigned,
+                  google=gcal.configured(), msg=request.query_params.get("msg"))
 
 
 @router.get("/zones/new", response_class=HTMLResponse)
 def new_zone_page(request: Request, db: Session = Depends(get_db),
                   p: Principal = Depends(current_principal)):
     return zone_edit_page(request, None, db, p)
+
+
+RANGES = {"24h": (24, 5), "3d": (72, 5), "7d": (168, 15), "30d": (720, 60)}  # hours, bucket min
 
 
 @router.get("/zones/{zone_id}", response_class=HTMLResponse)
@@ -149,24 +177,33 @@ def room_page(request: Request, zone_id: int, db: Session = Depends(get_db),
     if not zone:
         raise HTTPException(404)
     now = utcnow()
-    events = []
-    if zone.calendar_id:
-        events = db.scalars(select(CalendarEvent).where(
-            CalendarEvent.calendar_id == zone.calendar_id,
-            CalendarEvent.ends_at > now).order_by(CalendarEvent.starts_at).limit(8)).all()
+    room_of = {r.calendar_id: r.name for r in zone.rooms if r.calendar_id}
+    events = db.scalars(select(CalendarEvent).where(
+        CalendarEvent.calendar_id.in_(list(room_of)), CalendarEvent.ends_at > now)
+        .order_by(CalendarEvent.starts_at).limit(12)).all() if room_of else []
     blocks = db.scalars(select(ScheduleBlock).where(ScheduleBlock.zone_id == zone.id)
                         .order_by(ScheduleBlock.start)).all()
-    hours = 24 * 7 if request.query_params.get("range") == "7d" else 24
+    inherited = db.scalars(select(ScheduleBlock).where(
+        (ScheduleBlock.group_id.in_([g.id for g in zone.groups]))
+        | (ScheduleBlock.building_id == zone.building_id if zone.building_id else False))
+        .order_by(ScheduleBlock.start)).all()
+    rng = request.query_params.get("range", "24h")
+    hours, bucket = RANGES.get(rng, RANGES["24h"])
     tz = zone.campus.timezone if zone.campus else get_settings().default_timezone
     start = now - timedelta(hours=hours)
-    chart = room_chart(api.room_points(zone, start), start, now, tz)
+    pts = downsample(api.room_points(zone, start), timedelta(minutes=bucket))
+    chart = room_chart(pts, start, now, tz, gap=timedelta(minutes=bucket * 2 + 6))
+    syncs = [db.get(CalendarSyncState, c) for c in room_of]
     return render(request, "room.html", p, zone=zone, s=api.zone_status(db, zone, now),
-                  chart=chart, range="7d" if hours > 24 else "24h",
+                  chart=chart, range=rng if rng in RANGES else "24h", ranges=list(RANGES),
                   insights=api.room_insights(zone, now),
-                  preview=_preview(db, zone, now, hours=36), events=events,
+                  preview=_preview(db, zone, now, hours=36), events=events, room_of=room_of,
                   blocks=[api.block_dict(b) for b in blocks],
+                  inherited=[api.block_dict(b) for b in inherited],
                   thermostats=sorted(zone.thermostats, key=lambda t: t.name),
-                  sync=db.get(CalendarSyncState, zone.calendar_id) if zone.calendar_id else None)
+                  last_sync=min((x.last_success for x in syncs if x and x.last_success),
+                                default=None),
+                  editable=p.can_write and p.may_touch_campus(zone.campus_id))
 
 
 @router.get("/zones/{zone_id}/edit", response_class=HTMLResponse)
@@ -175,22 +212,22 @@ def zone_edit_page(request: Request, zone_id: int | None, db: Session = Depends(
     zone = db.get(Zone, zone_id) if zone_id else None
     if zone_id and not zone:
         raise HTTPException(404)
-    resources, resource_error = [], None
-    if gcal.configured():
-        try:
-            resources = gcal.list_resources()
-        except Exception as err:  # show the page anyway; the id can be typed in
-            resource_error = str(err)
     thermostats = db.scalars(select(Thermostat).where(
         (Thermostat.zone_id.is_(None)) | (Thermostat.zone_id == zone_id))
         .order_by(Thermostat.name)).all()
-    blocks = (db.scalars(select(ScheduleBlock).where(ScheduleBlock.zone_id == zone.id)
-                         .order_by(ScheduleBlock.start)).all() if zone else [])
+    campuses, _ = _campus_tree(db)
     editable = p.can_write and (zone is None or p.may_touch_campus(zone.campus_id))
-    return render(request, "zone_edit.html", p, zone=zone,
-                  campuses=db.scalars(select(Campus).order_by(Campus.name)).all(),
-                  thermostats=thermostats, resources=resources, resource_error=resource_error,
-                  blocks=[api.block_dict(b) for b in blocks], editable=editable)
+    return render(request, "zone_edit.html", p, zone=zone, campuses=campuses,
+                  thermostats=thermostats, editable=editable,
+                  preset_campus=_int(request.query_params.get("campus")),
+                  preset_building=_int(request.query_params.get("building")))
+
+
+def _int(v) -> int | None:
+    try:
+        return int(v) if v not in (None, "") else None
+    except ValueError:
+        return None
 
 
 def _preview(db: Session, zone: Zone, now: datetime, hours: int = 48) -> list[dict]:
@@ -218,11 +255,11 @@ def _preview(db: Session, zone: Zone, now: datetime, hours: int = 48) -> list[di
 async def save_zone(request: Request, zone_id: int | None = None, db: Session = Depends(get_db),
                     p: Principal = Depends(require_write)):
     form = await request.form()
-    data = {k: v for k, v in form.items() if k != "thermostat_ids" and v != ""}
+    data = {k: v for k, v in form.items()
+            if k not in ("thermostat_ids", "room_ids") and v != ""}
     data["enabled"] = "enabled" in form
     data["thermostat_ids"] = [int(x) for x in form.getlist("thermostat_ids")]
-    if data.get("calendar_id") and not data.get("calendar_name"):
-        data["calendar_name"] = data["calendar_id"]
+    data["room_ids"] = [int(x) for x in form.getlist("room_ids")]
     try:
         body = api.ZoneIn(**data)
     except ValidationError as err:
@@ -248,6 +285,101 @@ def delete_zone(zone_id: int, db: Session = Depends(get_db),
     return RedirectResponse("/setup", status_code=303)
 
 
+# ---------- buildings & rooms (setup) ----------
+
+@router.post("/buildings")
+@router.post("/buildings/{building_id}")
+def save_building(building_id: int | None = None, name: str = Form(...),
+                  campus_id: int = Form(...), db: Session = Depends(get_db),
+                  p: Principal = Depends(require_write)):
+    body = api.BuildingIn(name=name.strip(), campus_id=campus_id)
+    if building_id:
+        api.update_building(building_id, body, db, p)
+    else:
+        api.create_building(body, db, p)
+    return RedirectResponse(f"/setup?msg=Saved {body.name}#campus-{campus_id}", status_code=303)
+
+
+@router.post("/buildings/{building_id}/delete")
+def remove_building(building_id: int, db: Session = Depends(get_db),
+                    p: Principal = Depends(require_write)):
+    api.delete_building(building_id, db, p)
+    return RedirectResponse("/setup?msg=Building removed", status_code=303)
+
+
+@router.get("/rooms/new", response_class=HTMLResponse)
+@router.get("/rooms/{room_id}/edit", response_class=HTMLResponse)
+def room_edit_page(request: Request, room_id: int | None = None, db: Session = Depends(get_db),
+                   p: Principal = Depends(current_principal)):
+    room = db.get(Room, room_id) if room_id else None
+    if room_id and not room:
+        raise HTTPException(404)
+    resources, resource_error = [], None
+    if gcal.configured():
+        try:
+            resources = gcal.list_resources()
+        except Exception as err:  # show the page anyway; the id can be typed in
+            resource_error = str(err)
+    campuses, _ = _campus_tree(db)
+    return render(request, "room_edit.html", p, room=room, campuses=campuses,
+                  resources=resources, resource_error=resource_error,
+                  preset_campus=_int(request.query_params.get("campus")),
+                  preset_building=_int(request.query_params.get("building")),
+                  editable=p.can_write and (room is None or p.may_touch_campus(room.campus_id)))
+
+
+@router.post("/rooms")
+@router.post("/rooms/{room_id}")
+async def save_room(request: Request, room_id: int | None = None,
+                    db: Session = Depends(get_db), p: Principal = Depends(require_write)):
+    form = await request.form()
+    try:
+        body = api.RoomIn(name=(form.get("name") or "").strip(),
+                          campus_id=int(form["campus_id"]),
+                          building_id=_int(form.get("building_id")),
+                          calendar_id=(form.get("calendar_id") or "").strip() or None,
+                          capacity=_int(form.get("capacity")),
+                          zone_ids=[int(x) for x in form.getlist("zone_ids")])
+    except (KeyError, ValueError, ValidationError) as err:
+        raise HTTPException(422, "a room needs a name and a campus") from err
+    if room_id:
+        api.update_room(room_id, body, db, p)
+    else:
+        api.create_room(body, db, p)
+    return RedirectResponse(f"/setup?msg=Saved {body.name}#campus-{body.campus_id}",
+                            status_code=303)
+
+
+@router.post("/rooms/{room_id}/delete")
+def remove_room(room_id: int, db: Session = Depends(get_db),
+                p: Principal = Depends(require_write)):
+    api.delete_room(room_id, db, p)
+    return RedirectResponse("/setup?msg=Room removed", status_code=303)
+
+
+@router.get("/setup/import", response_class=HTMLResponse)
+def import_page(request: Request, db: Session = Depends(get_db),
+                p: Principal = Depends(require_admin)):
+    try:
+        gbuildings, error = (api.google_buildings(p) if gcal.configured() else []), None
+    except Exception as err:
+        gbuildings, error = [], str(err)
+    return render(request, "import.html", p, gbuildings=gbuildings, error=error,
+                  campuses=db.scalars(select(Campus).order_by(Campus.name)).all(),
+                  google=gcal.configured())
+
+
+@router.post("/setup/import")
+async def run_import(request: Request, db: Session = Depends(get_db),
+                     p: Principal = Depends(require_admin)):
+    form = await request.form()
+    mapping = {k.removeprefix("b:"): int(v) for k, v in form.items()
+               if k.startswith("b:") and v}
+    r = api.import_google_rooms(db, p, api.GoogleImportIn(campuses=mapping))
+    return RedirectResponse(f"/setup?msg=Imported {r['rooms']} rooms and {r['buildings']} "
+                            "buildings from Google", status_code=303)
+
+
 def _campuses_with_zones(db: Session):
     return db.scalars(select(Campus).order_by(Campus.name)
                       .options(selectinload(Campus.zones))).all()
@@ -264,14 +396,28 @@ def groups_page(request: Request, db: Session = Depends(get_db),
 @router.get("/groups/{group_id}", response_class=HTMLResponse)
 def group_page(request: Request, group_id: int, db: Session = Depends(get_db),
                p: Principal = Depends(current_principal)):
+    """Operator view: the group's zones, one-tap changes and its weekly schedule."""
     g = db.get(ZoneGroup, group_id)
     if not g:
         raise HTTPException(404)
     blocks = db.scalars(select(ScheduleBlock).where(ScheduleBlock.group_id == g.id)
                         .order_by(ScheduleBlock.start)).all()
+    now = utcnow()
     editable = p.can_write and all(p.may_touch_campus(z.campus_id) for z in g.zones)
-    return render(request, "group.html", p, group=g, campuses=_campuses_with_zones(db),
+    return render(request, "group.html", p, group=g,
+                  status={z.id: api.zone_status(db, z, now) for z in g.zones if z.enabled},
                   blocks=[api.block_dict(b) for b in blocks], editable=editable)
+
+
+@router.get("/groups/{group_id}/edit", response_class=HTMLResponse)
+def group_edit_page(request: Request, group_id: int, db: Session = Depends(get_db),
+                    p: Principal = Depends(current_principal)):
+    g = db.get(ZoneGroup, group_id)
+    if not g:
+        raise HTTPException(404)
+    editable = p.can_write and all(p.may_touch_campus(z.campus_id) for z in g.zones)
+    return render(request, "group_edit.html", p, group=g, campuses=_campuses_with_zones(db),
+                  editable=editable)
 
 
 def _group_body(form) -> api.GroupIn:
@@ -286,14 +432,14 @@ def _group_body(form) -> api.GroupIn:
 async def add_group(request: Request, db: Session = Depends(get_db),
                     p: Principal = Depends(require_write)):
     gid = api.create_group(_group_body(await request.form()), db, p)["id"]
-    return RedirectResponse(f"/groups/{gid}", status_code=303)
+    return RedirectResponse(f"/groups/{gid}/edit", status_code=303)
 
 
 @router.post("/groups/{group_id}")
 async def save_group(request: Request, group_id: int, db: Session = Depends(get_db),
                      p: Principal = Depends(require_write)):
     api.update_group(group_id, _group_body(await request.form()), db, p)
-    return RedirectResponse(f"/groups/{group_id}", status_code=303)
+    return RedirectResponse(f"/groups/{group_id}/edit?saved=1", status_code=303)
 
 
 @router.post("/groups/{group_id}/delete")
@@ -308,8 +454,8 @@ async def add_block(request: Request, db: Session = Depends(get_db),
                     p: Principal = Depends(require_write)):
     form = await request.form()
     weekdays = sum({int(x) for x in form.getlist("weekdays")})
-    data = {k: form.get(k) or None for k in
-            ("zone_id", "group_id", "start", "end", "mode", "heat", "cool", "label")}
+    data = {k: form.get(k) or None for k in ("zone_id", "group_id", "building_id", "start",
+                                             "end", "mode", "heat", "cool", "label")}
     try:
         body = api.BlockIn(weekdays=weekdays, **data)
     except ValidationError as err:
@@ -331,7 +477,7 @@ def delete_block(request: Request, block_id: int, db: Session = Depends(get_db),
 @router.post("/overrides")
 async def add_override(request: Request, db: Session = Depends(get_db),
                        p: Principal = Depends(require_write)):
-    """Bulk bar: one override per selected zone, or one for the chosen group."""
+    """One override per selected zone, or one for the chosen group or building."""
     form = await request.form()
     common = {
         "mode": form.get("mode", "custom"),
@@ -341,9 +487,10 @@ async def add_override(request: Request, db: Session = Depends(get_db),
         "reason": form.get("reason") or None,
     }
     targets = ([("group", int(form["group_id"]))] if form.get("group_id")
+               else [("building", int(form["building_id"]))] if form.get("building_id")
                else [("zone", z) for z in sorted({int(z) for z in form.getlist("zone_ids")})])
     if not targets:
-        raise HTTPException(400, "pick at least one zone or a group")
+        raise HTTPException(400, "pick at least one zone, a group or a building")
     try:
         for kind, tid in targets:
             api.create_override(db, p, api.OverrideIn(target=kind, target_id=tid, **common))

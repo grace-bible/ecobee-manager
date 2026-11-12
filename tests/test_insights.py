@@ -2,7 +2,7 @@
 
 from datetime import UTC, date, datetime, timedelta
 
-from app.insights import Point, daily_runtime, merge_room, occupancy, warmups
+from app.insights import Point, daily_runtime, downsample, merge_room, occupancy, time_to_target
 
 T0 = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)  # Sunday 6:00 AM Central
 STEP = timedelta(minutes=5)
@@ -18,11 +18,11 @@ def pts(temps, heat, cool, **kw):
                   kw.get("occ", [None] * n)[i]) for i in range(n)]
 
 
-def test_warmup_measures_minutes_to_reach_new_band():
+def test_time_to_target_measures_minutes_to_reach_new_band():
     # Setback 62 until index 2, then 68; the room climbs 1°F per 5 min from 63.
     temps = [63, 63, 63, 64, 65, 66, 67, 67.6, 68, 68]
     heat = [62, 62, 68, 68, 68, 68, 68, 68, 68, 68]
-    w = warmups(pts(temps, heat, 80))
+    w = time_to_target(pts(temps, heat, 80))
     assert len(w) == 1
     assert (w[0].kind, w[0].target, w[0].start_temp) == ("heat", 68, 63)
     assert w[0].started == T0 + 2 * STEP
@@ -32,15 +32,15 @@ def test_warmup_measures_minutes_to_reach_new_band():
 def test_cooldown_and_never_reached():
     temps = [79, 79, 79, 78.5, 78, 77.5, 77]
     cool = [80, 72, 72, 72, 72, 72, 72]
-    w = warmups(pts(temps, 60, cool), give_up=timedelta(minutes=20))
+    w = time_to_target(pts(temps, 60, cool), give_up=timedelta(minutes=20))
     assert (w[0].kind, w[0].target) == ("cool", 72)
     assert w[0].minutes is None  # didn't get within 0.5°F of 72 in 20 min
 
 
 def test_small_or_already_satisfied_steps_are_ignored():
     # 1°F bump, and a step up while the room is already warm enough.
-    assert warmups(pts([70, 70, 70], [66, 67, 67], 80)) == []
-    assert warmups(pts([70, 70, 70], [62, 68, 68], 80)) == []
+    assert time_to_target(pts([70, 70, 70], [66, 67, 67], 80)) == []
+    assert time_to_target(pts([70, 70, 70], [62, 68, 68], 80)) == []
 
 
 def test_daily_runtime_in_local_days():
@@ -83,3 +83,11 @@ def test_occupancy_ignores_thermostats_without_a_sensor():
     # No sensor: ecobee reports 0 (unoccupied) every interval, never 1.
     o = occupancy(pts([70] * 6, 68, 72, occ=[False] * 6), 62, 80)
     assert o["has_data"] is False
+
+
+def test_downsample_averages_into_buckets():
+    p = pts([60, 62, 64, 66, 68, 70], 68, 72, heat_s=[300, 300, 0, 0, 0, 0])
+    d = downsample(p, timedelta(minutes=15))
+    assert [x.temp for x in d] == [62, 68]
+    assert [x.heat_s for x in d] == [200, 0]
+    assert downsample(p, timedelta(minutes=5)) == p

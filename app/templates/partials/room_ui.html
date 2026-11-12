@@ -16,16 +16,17 @@
 {# One line on why the room is at this target, and until when. #}
 {% macro why(s, tz) -%}
   {% if s.override %}
-    <span class="tag-override">{% if s.override.scope == 'group' %}{{ s.override.group or 'Group' }} override{% else %}Override{% endif %}</span>
+    <span class="tag-override">{% if s.override.scope != 'zone' %}{{ s.override.group or s.override.scope | capitalize }} override{% else %}Override{% endif %}</span>
     by {{ s.override.created_by.split('@')[0] }}{% if s.override.reason %} · {{ s.override.reason }}{% endif %}
-  {% elif s.source == 'calendar' %}Booked: {{ s.event }}
+  {% elif s.source == 'calendar' %}Booked{% if s.event_room %} in {{ s.event_room }}{% endif %}: {{ s.event }}
   {% elif s.source == 'schedule' %}Weekly schedule
   {% else %}No schedule right now{% endif %}
   {% if s.until %} · until {{ s.until | when(tz) }}{% endif %}
   {% if s.next %}<div class="next">Then {{ INTENTS.get(s.next.intent, s.next.intent) | lower }}, {{ s.next.heat | deg }}–{{ s.next.cool | deg }}°</div>{% endif %}
 {%- endmacro %}
 
-{# One-tap changes for a zone or group. kind: 'zone' | 'group'. #}
+{# One-tap changes for a zone, group or building. kind: 'zone' | 'group' | 'building'. #}
+{% macro target_field(kind) %}{{ {'group': 'group_id', 'building': 'building_id'}.get(kind, 'zone_ids') }}{% endmacro %}
 {% macro quick_actions(kind, id, name, s=none, heat=68, cool=72) %}
 <div class="actions">
   {% if s and s.override and s.override.scope == 'zone' %}
@@ -34,12 +35,12 @@
     </form>
   {% else %}
     <form method="post" action="/overrides">
-      <input type="hidden" name="{{ 'group_id' if kind == 'group' else 'zone_ids' }}" value="{{ id }}">
+      <input type="hidden" name="{{ target_field(kind) }}" value="{{ id }}">
       <input type="hidden" name="mode" value="occupied"><input type="hidden" name="minutes" value="120">
       <button class="secondary" title="Comfortable for the next 2 hours">In use · 2h</button>
     </form>
     <form method="post" action="/overrides">
-      <input type="hidden" name="{{ 'group_id' if kind == 'group' else 'zone_ids' }}" value="{{ id }}">
+      <input type="hidden" name="{{ target_field(kind) }}" value="{{ id }}">
       <input type="hidden" name="mode" value="off"><input type="hidden" name="minutes" value="120">
       <button class="secondary" title="Widest safe band for the next 2 hours">Off · 2h</button>
     </form>
@@ -54,6 +55,7 @@
   <div class="room-top">
     <div>
       <a class="room-name" href="/zones/{{ z.id }}">{{ z.name }}</a>
+      {% if s.rooms and s.rooms != [z.name] %}<div class="room-meta">{{ s.rooms | join(', ') }}</div>{% endif %}
       <div class="room-meta">
         {% if s.thermostats == 0 %}No thermostats yet
         {% elif s.online < s.thermostats %}<span class="offline">{{ s.thermostats - s.online }} of {{ s.thermostats }} offline</span>
@@ -77,7 +79,7 @@
   <form method="post" action="/overrides" class="dlg">
     <h2 id="adjust-title">Adjust</h2>
     <p class="sub" id="adjust-sub">Temporary. The schedule takes over again afterwards.</p>
-    <input type="hidden" name="zone_ids"><input type="hidden" name="group_id">
+    <input type="hidden" name="zone_ids"><input type="hidden" name="group_id"><input type="hidden" name="building_id">
     <fieldset>
       <legend class="muted" style="font-size:13px;font-weight:550;margin-bottom:6px">Set the room to</legend>
       <div class="seg">
@@ -130,10 +132,11 @@
   document.addEventListener('click', e => {
     const b = e.target.closest('[data-adjust]');
     if (!b) return;
-    const zone = b.dataset.kind === 'zone';
-    f.elements.zone_ids.value = zone ? b.dataset.id : '';
-    f.elements.group_id.value = zone ? '' : b.dataset.id;
-    f.elements.zone_ids.disabled = !zone; f.elements.group_id.disabled = zone;
+    const field = {zone: 'zone_ids', group: 'group_id', building: 'building_id'}[b.dataset.kind];
+    for (const n of ['zone_ids', 'group_id', 'building_id']) {
+      f.elements[n].value = n === field ? b.dataset.id : '';
+      f.elements[n].disabled = n !== field;
+    }
     temps.heat = Math.round(+b.dataset.heat || 68); temps.cool = Math.round(+b.dataset.cool || 72);
     document.getElementById('adjust-title').textContent = b.dataset.name;
     f.elements.mode.value = 'custom'; show();

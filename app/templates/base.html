@@ -33,7 +33,7 @@
     {% if section == 'setup' %}
     <nav class="subnav" aria-label="Setup">
       {% set sub = sub | default('') %}
-      <a href="/setup" {% if sub == 'zones' %}aria-current="page"{% endif %}>Rooms &amp; campuses</a>
+      <a href="/setup" {% if sub == 'zones' %}aria-current="page"{% endif %}>Buildings &amp; rooms</a>
       <a href="/groups" {% if sub == 'groups' %}aria-current="page"{% endif %}>Groups</a>
       <a href="/audit" {% if sub == 'audit' %}aria-current="page"{% endif %}>Activity</a>
       <a href="/settings" {% if sub == 'system' %}aria-current="page"{% endif %}>System</a>

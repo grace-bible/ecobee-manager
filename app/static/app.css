@@ -276,3 +276,16 @@ dialog::backdrop { background: rgb(15 15 14 / .45); }
 .minibars i { display: block; width: 40%; max-width: 12px; border-radius: 3px 3px 0 0; min-height: 1px; }
 .minibars i.h { background: var(--heat); } .minibars i.c { background: var(--cool); }
 .minibars span { font-size: 11px; color: var(--muted); }
+
+/* ---------- buildings ---------- */
+a.plain { color: inherit; }
+.campus-head { font-size: 22px; margin-top: 28px; }
+.building + .building { margin-top: 8px; }
+.building-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.building-actions .actions { margin: 0; }
+.building-actions .actions button { flex: 0 0 auto; }
+.setup-building table th { background: transparent; }
+.setup-building details summary { cursor: pointer; font-size: 13px; }
+.inline-edit { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
+.setup-building h3 { text-transform: none; letter-spacing: -.01em; font-size: 16px; color: var(--ink); }
+[id] { scroll-margin-top: 72px; }

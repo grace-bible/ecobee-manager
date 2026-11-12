@@ -77,6 +77,26 @@ def list_resources() -> list[Resource]:
             return sorted(out, key=lambda r: ((r.building or ""), r.name))
 
 
+@dataclass
+class WorkspaceBuilding:
+    id: str  # buildingId, as on each room resource
+    name: str
+
+
+def list_buildings() -> list[WorkspaceBuilding]:
+    """Workspace buildings (names for the buildingIds on room resources)."""
+    svc = _service("admin", "directory_v1")
+    out, token = [], None
+    while True:
+        resp = svc.resources().buildings().list(
+            customer=get_settings().google_customer_id, maxResults=500, pageToken=token).execute()
+        out += [WorkspaceBuilding(b["buildingId"], b.get("buildingName") or b["buildingId"])
+                for b in resp.get("buildings", [])]
+        token = resp.get("nextPageToken")
+        if not token:
+            return out
+
+
 def _parse_time(t: dict) -> datetime:
     if "dateTime" in t:
         return datetime.fromisoformat(t["dateTime"])
@@ -156,16 +176,21 @@ def sync_calendar(cal_id: str) -> int:
         raise
 
 
+def wanted_calendars(s) -> list[str]:
+    """Calendars of rooms that an enabled zone serves."""
+    return sorted({c for z in s.scalars(select(Zone).where(Zone.enabled.is_(True)))
+                   for c in z.calendar_ids})
+
+
 def sync_all() -> dict:
-    """Sync every calendar linked to an enabled zone. One failure doesn't stop the rest.
+    """Sync every room calendar served by an enabled zone. One failure doesn't stop the rest.
 
     Note: a syncToken keeps returning changes forever, so the 14-day window only bounds the
     first sync. Old rows are pruned here so the table doesn't grow without limit."""
     if not configured():
         return {"skipped": "google not configured"}
     with session_scope() as s:
-        cals = sorted({z.calendar_id for z in s.scalars(select(Zone).where(
-            Zone.enabled.is_(True), Zone.calendar_id.is_not(None)))})
+        cals = wanted_calendars(s)
         s.execute(delete(CalendarEvent).where(CalendarEvent.ends_at < utcnow() - timedelta(days=2)))
     result = {}
     for cal in cals:

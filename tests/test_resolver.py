@@ -81,7 +81,7 @@ def test_schedule_block_weekday():
 def test_zone_block_beats_group_block():
     every = 127
     zb = BlockIn(every, time(8), time(12), "occupied", id=1)
-    gb = BlockIn(every, time(8), time(12), "unoccupied", is_group=True, id=2)
+    gb = BlockIn(every, time(8), time(12), "unoccupied", level=1, id=2)
     assert resolve(Z, NOW, blocks=[gb, zb]).ref == "block:1"
 
 
@@ -129,3 +129,28 @@ def test_next_change_is_a_whole_minute_stable_across_calls():
     first = next_change(Z, now, overrides=[o])
     assert first == NOW + timedelta(minutes=11)
     assert next_change(Z, now + timedelta(minutes=1), overrides=[o]) == first
+
+
+def test_block_priority_zone_then_group_then_building():
+    every = 127
+    zb = BlockIn(every, time(8), time(12), "occupied", level=0, id=1)
+    gb = BlockIn(every, time(8), time(12), "unoccupied", level=1, id=2)
+    bb = BlockIn(every, time(8), time(12), "off", level=2, id=3)
+    assert resolve(Z, NOW, blocks=[bb, gb, zb]).ref == "block:1"
+    assert resolve(Z, NOW, blocks=[bb, gb]).ref == "block:2"
+    assert resolve(Z, NOW, blocks=[bb]).intent == "off"
+
+
+def test_building_override_is_lowest_override_level():
+    b = OverrideIn(3, "off", None, None, NOW - timedelta(hours=1), NOW + timedelta(hours=1), 9)
+    z = OverrideIn(1, "custom", 70, 74, NOW - timedelta(hours=2), NOW + timedelta(hours=1), 8)
+    assert resolve(Z, NOW, [b, z]).ref == "override:8"
+    assert resolve(Z, NOW, [b]).ref == "override:9"
+
+
+def test_same_booking_in_two_rooms_counts_once():
+    from app.resolver import EventIn
+    a = EventIn(NOW, NOW + timedelta(hours=1), "Youth night", None, "evt1", room="Kids 101")
+    b = EventIn(NOW, NOW + timedelta(hours=1), "Youth night", None, "evt1", room="Kids 102")
+    d = resolve(Z, NOW, events=[a, b])
+    assert d.source == "calendar" and d.ref == "event:evt1"

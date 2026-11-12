@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% set section = 'setup' %}{% set sub = 'zones' %}
+{% block title %}{{ room.name if room else 'New room' }}{% endblock %}
+{% set cur_campus = room.campus_id if room else preset_campus %}
+{% set cur_building = room.building_id if room else preset_building %}
+{% block content %}
+<div class="pagehead">
+  <div>
+    <div class="crumbs"><a href="/setup">Buildings &amp; rooms</a></div>
+    <h1>{{ room.name if room else 'New room' }}</h1>
+    <p class="muted" style="margin:0">A room is a space people book. Its calendar tells the zones that serve it when to heat or cool.</p>
+  </div>
+</div>
+
+<form method="post" action="/rooms{% if room %}/{{ room.id }}{% endif %}">
+  <div class="panel">
+    <div class="formgrid">
+      <label>Room name <input name="name" required value="{{ room.name if room else '' }}" placeholder="e.g. Kids 102"></label>
+      <label>Campus
+        <select name="campus_id" required id="campus">
+          {% for c in campuses if me.may_touch_campus(c.id) or (room and room.campus_id == c.id) %}<option value="{{ c.id }}" {% if c.id == cur_campus %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Building
+        <select name="building_id">
+          <option value="">None</option>
+          {% for c in campuses %}{% if c.buildings %}<optgroup label="{{ c.name }}" data-campus="{{ c.id }}">
+            {% for b in c.buildings %}<option value="{{ b.id }}" {% if b.id == cur_building %}selected{% endif %}>{{ b.name }}</option>{% endfor %}
+          </optgroup>{% endif %}{% endfor %}
+        </select>
+      </label>
+      <label>Capacity <input type="number" name="capacity" min="0" value="{{ room.capacity if room and room.capacity is not none else '' }}"></label>
+    </div>
+  </div>
+
+  <h2>Room calendar</h2>
+  <div class="panel">
+    {% if resources %}
+      <label>Google room calendar
+        <select name="calendar_id">
+          <option value="">None</option>
+          {% for r in resources %}
+            <option value="{{ r.email }}" {% if room and room.calendar_id == r.email %}selected{% endif %}>
+              {% if r.building %}{{ r.building }} · {% endif %}{{ r.name }}{% if r.capacity %} ({{ r.capacity }}){% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+    {% else %}
+      <label>Room calendar ID
+        <input name="calendar_id" placeholder="c_…@resource.calendar.google.com" value="{{ room.calendar_id if room and room.calendar_id else '' }}" style="max-width:520px">
+      </label>
+      <p class="muted" style="font-size:13px">{% if resource_error %}Couldn't list rooms: {{ resource_error }}{% else %}Once Google Calendar is connected (System), calendars can be picked from a list, or imported with their rooms.{% endif %}</p>
+    {% endif %}
+  </div>
+
+  <h2>Served by</h2>
+  <div class="panel">
+    {% set mine = room.zones | map(attribute='id') | list if room else [] %}
+    {% for c in campuses %}{% if c.zones %}
+      <div class="grid" data-campus="{{ c.id }}">
+        {% for z in c.zones | sort(attribute='name') %}<label class="check"><input type="checkbox" name="zone_ids" value="{{ z.id }}" {% if z.id in mine %}checked{% endif %}> {{ z.name }}</label>{% endfor %}
+      </div>
+    {% endif %}{% endfor %}
+    <p class="muted" style="font-size:13px">Usually one zone. Pick more if the room is on several HVAC units (a hall on two units, a gym split into halves).</p>
+  </div>
+
+  {% if editable %}<div class="formfoot"><button type="submit">{{ 'Save room' if room else 'Create room' }}</button><a href="/setup" class="muted">Cancel</a></div>{% endif %}
+</form>
+
+{% if room and editable %}
+<h2>Remove room</h2>
+<form class="panel" method="post" action="/rooms/{{ room.id }}/delete" onsubmit="return confirm('Remove {{ room.name }}? Its bookings will no longer drive any zone.')">
+  <p class="muted">Its bookings stop driving {{ room.zones | map(attribute='name') | join(', ') or 'any zone' }}. Nothing changes in Google.</p>
+  <button class="danger">Remove room</button>
+</form>
+{% endif %}
+
+<script>
+(() => {
+  const sel = document.getElementById('campus'); if (!sel) return;
+  const sync = () => document.querySelectorAll('[data-campus]').forEach(el => {
+    const on = el.dataset.campus === sel.value; el.hidden = !on;
+    if (!on) el.querySelectorAll('input, option').forEach(i => { i.checked = false; i.selected = false; });
+  });
+  sel.addEventListener('change', sync); sync();
+})();
+</script>
+{% endblock %}

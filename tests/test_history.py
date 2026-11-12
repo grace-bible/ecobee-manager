@@ -38,11 +38,12 @@ def test_sync_stores_once_and_pages_use_it():
         assert len(pts) > 200 and {"temp", "heat_sp", "heat_s"} <= set(pts[0])
         ins = c.get(f"/api/v1/zones/{zone}/insights").json()
         assert ins["samples"] > 0 and ins["runtime"] and ins["occupancy"]["has_data"]
-        assert ins["warmup_summary"]["count"] > 0  # the fake has a daily schedule
+        assert ins["time_to_target_summary"]["count"] > 0  # the fake has a daily schedule
 
         page = c.get(f"/zones/{zone}").text
-        assert 'class="chart"' in page and "Getting to temperature" in page
-        assert 'class="chart"' in c.get(f"/zones/{zone}?range=7d").text
+        assert 'class="chart"' in page and "Time to target" in page
+        for rng in ("3d", "7d", "30d"):
+            assert 'class="chart"' in c.get(f"/zones/{zone}?range={rng}").text, rng
         assert "Hall" in c.get("/insights").text and c.get("/insights?days=30").status_code == 200
 
 

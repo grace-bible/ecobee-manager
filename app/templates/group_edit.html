@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% set section = 'setup' %}{% set sub = 'groups' %}
+{% block title %}{{ group.name }} settings{% endblock %}
+{% block content %}
+<div class="pagehead"><div>
+<div class="crumbs"><a href="/groups">Groups</a></div>
+<h1>{{ group.name }} settings</h1></div>
+<a class="button secondary small" href="/groups/{{ group.id }}">View group</a></div>
+{% if request.query_params.get('saved') %}<div class="msg">Saved.</div>{% endif %}
+<form class="panel" method="post" action="/groups/{{ group.id }}">
+  <div class="grid">
+    <label>Name <input name="name" required value="{{ group.name }}"></label>
+    <label>Description <input name="description" value="{{ group.description or '' }}"></label>
+  </div>
+  {% set selected = group.zones | map(attribute='id') | list %}
+  {% include "partials/zone_picker.html" %}
+  {% if me.can_write %}<p><button>Save group</button></p>{% endif %}
+</form>
+
+{% if editable %}
+<h2>Danger zone</h2>
+<form method="post" action="/groups/{{ group.id }}/delete" onsubmit="return confirm('Delete this group? Its schedule blocks and overrides go with it. Zones are kept.')">
+  <button class="danger">Delete group</button>
+</form>
+{% endif %}
+{% endblock %}

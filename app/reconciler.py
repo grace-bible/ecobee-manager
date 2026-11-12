@@ -56,27 +56,37 @@ def gather_inputs(s, z: Zone, now: datetime, horizon: timedelta):
         Override.starts_at < now + horizon)).all()
     zone_ovs, therm_ovs = [], defaultdict(list)
     for o in ovs:
-        oi = OverrideIn(0 if o.thermostat_id else 1 if o.zone_id else 2, o.mode, o.heat, o.cool,
-                        aware(o.starts_at), aware(o.ends_at), o.id)
-        if o.zone_id == z.id or (o.group_id and o.group_id in group_ids):
+        level = 0 if o.thermostat_id else 1 if o.zone_id else 2 if o.group_id else 3
+        oi = OverrideIn(level, o.mode, o.heat, o.cool, aware(o.starts_at), aware(o.ends_at), o.id)
+        if (o.zone_id == z.id or (o.group_id and o.group_id in group_ids)
+                or (o.building_id and o.building_id == z.building_id)):
             zone_ovs.append(oi)
         elif o.thermostat_id:
             therm_ovs[o.thermostat_id].append(oi)
 
-    events = []
-    if z.calendar_id:
+    # Bookings in any room the zone serves. One event booked in several of its rooms counts
+    # once (resource calendars share the organizer's event id).
+    events, seen = [], set()
+    room_of = {r.calendar_id: r.name for r in z.rooms if r.calendar_id}
+    if room_of:
         lead, tail = timedelta(minutes=z.lead_minutes), timedelta(minutes=z.tail_minutes)
         for e in s.scalars(select(CalendarEvent).where(
-                CalendarEvent.calendar_id == z.calendar_id,
+                CalendarEvent.calendar_id.in_(list(room_of)),
                 CalendarEvent.starts_at < now + horizon + lead,
-                CalendarEvent.ends_at > now - tail)):
+                CalendarEvent.ends_at > now - tail).order_by(CalendarEvent.starts_at)):
+            if e.event_id in seen:
+                continue
+            seen.add(e.event_id)
             events.append(EventIn(aware(e.starts_at), aware(e.ends_at), e.title or "",
-                                  e.hvac_tag, e.event_id))
+                                  e.hvac_tag, e.event_id, room_of.get(e.calendar_id)))
 
     owner = [ScheduleBlock.zone_id == z.id]
     if group_ids:
         owner.append(ScheduleBlock.group_id.in_(group_ids))
-    blocks = [BlockIn(b.weekdays, b.start, b.end, b.mode, b.heat, b.cool, b.group_id is not None, b.id)
+    if z.building_id:
+        owner.append(ScheduleBlock.building_id == z.building_id)
+    blocks = [BlockIn(b.weekdays, b.start, b.end, b.mode, b.heat, b.cool,
+                      0 if b.zone_id else 1 if b.group_id else 2, b.id)
               for b in s.scalars(select(ScheduleBlock).where(or_(*owner)))]
     return zone_ovs, therm_ovs, events, blocks
 
@@ -90,7 +100,7 @@ def plan(now: datetime | None = None) -> list[dict]:
     with session_scope() as s:
         zones = s.scalars(select(Zone).where(Zone.enabled.is_(True)).options(
             selectinload(Zone.thermostats), selectinload(Zone.groups),
-            selectinload(Zone.campus))).all()
+            selectinload(Zone.campus), selectinload(Zone.rooms))).all()
         for z in zones:
             cfg = zone_cfg(z)
             zone_ovs, therm_ovs, events, blocks = gather_inputs(s, z, now, horizon)

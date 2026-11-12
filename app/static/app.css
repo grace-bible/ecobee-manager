@@ -346,3 +346,23 @@ h1 .dry-chip { vertical-align: middle; font-size: 13px; }
 .add-day summary { cursor: pointer; }
 .add-day .seg { grid-template-columns: 1fr 1fr; }
 .live-panel p { margin: 0 0 10px; }
+
+/* ---------- week view ---------- */
+.week-legend { margin: 0 0 14px; }
+.week-card { gap: 10px; }
+.week-grid { display: grid; grid-template-columns: 64px 1fr; gap: 4px 10px; align-items: center; }
+.week-hours { position: relative; height: 14px; font-size: 11px; color: var(--muted); }
+.week-hours span { position: absolute; transform: translateX(-50%); }
+.week-hours span:first-child { transform: none; }
+.week-day { font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.week-bar { position: relative; height: 18px; background: var(--surface-2); border-radius: 5px; overflow: hidden; }
+.week-bar i { position: absolute; top: 0; bottom: 0; }
+.wk.occupied { background: color-mix(in srgb, var(--ok) 70%, transparent); }
+.wk.unoccupied { background: color-mix(in srgb, var(--muted) 14%, transparent); }
+.wk.off { background: color-mix(in srgb, var(--muted) 35%, transparent); }
+.wk.custom { background: color-mix(in srgb, var(--violet) 65%, transparent); }
+.wk.src-calendar { box-shadow: inset 0 -4px 0 var(--accent); }
+.wk.src-override { box-shadow: inset 0 -4px 0 var(--warn); }
+.wk.src-special { box-shadow: inset 0 -4px 0 var(--bad); }
+.sw.wk { border: 1px solid var(--line); }
+.sw.wk.src-calendar, .sw.wk.src-override, .sw.wk.src-special { background: var(--surface-2); }

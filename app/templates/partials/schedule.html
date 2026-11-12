@@ -9,7 +9,7 @@
       <td>{% for name, bit in days %}{% if b.weekdays|int // bit % 2 %}<span class="day">{{ name }}</span>{% endif %}{% endfor %}</td>
       <td class="num">{{ b.start }}–{{ b.end }}</td>
       <td>{{ b.mode }}{% if b.mode == 'custom' %} <span class="heat">{{ b.heat or '' }}</span> / <span class="cool">{{ b.cool or '' }}</span>{% endif %}</td>
-      <td class="muted">{{ b.label or '' }}</td>
+      <td class="muted">{{ b.label or '' }}{% if b.season_start %} <span class="badge">{{ b.season_start | md }}–{{ b.season_end | md }} each year</span>{% endif %}</td>
       <td>{% if editable %}<form class="inline" method="post" action="/schedule-blocks/{{ b.id }}/delete"><button class="secondary small" aria-label="Delete block">Delete</button></form>{% endif %}</td>
     </tr>
   {% else %}<tr><td colspan="5" class="muted">No weekly blocks.{% if owner_field == 'zone_id' %} Without one, the zone is unoccupied unless a group schedule, the calendar or an override says otherwise.{% endif %}</td></tr>{% endfor %}
@@ -34,6 +34,8 @@
   <label>Heat °F <input type="number" name="heat" step="0.5" min="45" max="92"></label>
   <label>Cool °F <input type="number" name="cool" step="0.5" min="45" max="92"></label>
   <label>Label <input name="label" placeholder="e.g. Office hours"></label>
+  <label>Only from <input type="date" name="season_start" title="Optional: the block only applies between these dates, every year"></label>
+  <label>until <input type="date" name="season_end"></label>
   <button type="submit">Add block</button>
 </form>
 {% endif %}

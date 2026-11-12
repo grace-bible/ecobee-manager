@@ -27,6 +27,7 @@ from app.db import get_db
 from app.ecobee.backend import AuthRequired, BackendError
 from app.insights import downsample
 from app.models import (
+    SETPOINT_FIELDS,
     Alert,
     ApiKey,
     AppUser,
@@ -35,6 +36,7 @@ from app.models import (
     CalendarEvent,
     CalendarSyncState,
     Campus,
+    ComfortProfile,
     EcobeeCredentials,
     Override,
     Room,
@@ -83,6 +85,8 @@ SOURCES = {"override": "Override", "calendar": "Booking", "schedule": "Weekly sc
 templates.env.filters["local"] = _fmt_local
 templates.env.filters["when"] = _fmt_when
 templates.env.filters["deg"] = _fmt_deg
+templates.env.filters["md"] = lambda v: (datetime.strptime(f"2024-{v}", "%Y-%m-%d")
+                                          .strftime("%b %-d")) if v else ""
 templates.env.filters["zip_sum"] = lambda a, b: [x + y for x, y in zip(a, b, strict=True)]
 templates.env.globals["INTENTS"] = INTENTS
 templates.env.globals["SOURCES"] = SOURCES
@@ -242,6 +246,44 @@ def campus_setup_page(request: Request, campus_id: int, db: Session = Depends(ge
                         timezones=sorted(available_timezones()))
 
 
+@router.get("/setup/profiles", response_class=HTMLResponse)
+def profiles_page(request: Request, db: Session = Depends(get_db),
+                  p: Principal = Depends(current_principal)):
+    profiles = db.scalars(select(ComfortProfile).order_by(ComfortProfile.name)).all()
+    return render_setup(request, "profiles.html", p, db, current=("profiles", None),
+                        profiles=profiles)
+
+
+def _profile_body(form) -> api.ProfileIn:
+    try:
+        return api.ProfileIn(name=(form.get("name") or "").strip(),
+                             campus_id=_int(form.get("campus_id")),
+                             **{f: form[f] for f in SETPOINT_FIELDS if form.get(f)})
+    except ValidationError as err:
+        raise HTTPException(422, err.errors()[0]["msg"].removeprefix("Value error, ")) from err
+
+
+@router.post("/comfort-profiles")
+@router.post("/comfort-profiles/{profile_id}")
+async def save_profile(request: Request, profile_id: int | None = None,
+                       db: Session = Depends(get_db), p: Principal = Depends(require_write)):
+    body = _profile_body(await request.form())
+    if profile_id:
+        r = api.update_profile(profile_id, body, db, p)
+        msg = f"Saved {body.name}; {len(r['zone_ids'])} zone(s) updated"
+    else:
+        api.create_profile(body, db, p)
+        msg = f"Added {body.name}"
+    return RedirectResponse(f"/setup/profiles?msg={msg}", status_code=303)
+
+
+@router.post("/comfort-profiles/{profile_id}/delete")
+def remove_profile(profile_id: int, db: Session = Depends(get_db),
+                   p: Principal = Depends(require_write)):
+    api.delete_profile(profile_id, db, p)
+    return RedirectResponse("/setup/profiles?msg=Profile removed", status_code=303)
+
+
 @router.get("/setup/buildings/{building_id}", response_class=HTMLResponse)
 def building_setup_page(request: Request, building_id: int, db: Session = Depends(get_db),
                         p: Principal = Depends(current_principal)):
@@ -309,7 +351,8 @@ def zone_edit_page(request: Request, zone_id: int | None, db: Session = Depends(
         (Thermostat.zone_id.is_(None)) | (Thermostat.zone_id == zone_id))
         .order_by(Thermostat.name)).all()
     editable = p.can_write and (zone is None or p.may_touch_campus(zone.campus_id))
-    return render_setup(request, "zone_edit.html", p, db,
+    profiles = db.scalars(select(ComfortProfile).order_by(ComfortProfile.name)).all()
+    return render_setup(request, "zone_edit.html", p, db, profiles=profiles,
                         current=("zone", zone.id) if zone else ("new-zone", None), zone=zone,
                         thermostats=thermostats, editable=editable,
                   preset_campus=_int(request.query_params.get("campus")),
@@ -343,6 +386,69 @@ def _preview(db: Session, zone: Zone, now: datetime, hours: int = 48) -> list[di
     return spans
 
 
+def _week_rows(spans: list[dict], tz: str, week_start: datetime) -> list[dict]:
+    """Split preview spans into 7 local days of bar segments (left/width in % of the day)."""
+    zone = ZoneInfo(tz)
+    rows = []
+    for i in range(7):
+        day0 = (week_start + timedelta(days=i)).astimezone(zone)
+        day0 = day0.replace(hour=0, minute=0, second=0, microsecond=0)
+        day1 = (day0 + timedelta(days=1)).replace(hour=0)  # wall-clock midnight (DST-safe)
+        total = (day1 - day0).total_seconds()
+        segs = []
+        for sp in spans:
+            a, b = max(sp["start"], day0), min(sp["end"], day1)
+            if a >= b:
+                continue
+            segs.append({"left": round((a - day0).total_seconds() / total * 100, 3),
+                         "width": round((b - a).total_seconds() / total * 100, 3),
+                         "intent": sp["intent"], "source": sp["source"],
+                         "heat": sp["heat"], "cool": sp["cool"], "start": a, "end": b})
+        rows.append({"day": day0, "segments": segs})
+    return rows
+
+
+def _week_start(request: Request, tz: str) -> datetime:
+    """Monday 00:00 local of the requested week (?week=YYYY-MM-DD), default this week."""
+    zone = ZoneInfo(tz)
+    try:
+        d = datetime.fromisoformat(request.query_params["week"]).date()
+    except (KeyError, ValueError):
+        d = utcnow().astimezone(zone).date()
+    monday = d - timedelta(days=d.weekday())
+    return datetime(monday.year, monday.month, monday.day, tzinfo=zone)
+
+
+def _render_week(request: Request, p: Principal, db: Session, title: str, back: str,
+                 zones: list[Zone], tz: str):
+    start = _week_start(request, tz)
+    week = [{"zone": z, "rows": _week_rows(_preview(db, z, start, hours=24 * 7 + 1), tz, start)}
+            for z in zones if z.enabled]
+    return render(request, "week.html", p, title=title, back=back, week=week, tz=tz,
+                  start=start, prev=(start - timedelta(days=7)).date(),
+                  next=(start + timedelta(days=7)).date())
+
+
+@router.get("/buildings/{building_id}/week", response_class=HTMLResponse)
+def building_week(request: Request, building_id: int, db: Session = Depends(get_db),
+                  p: Principal = Depends(current_principal)):
+    b = db.get(Building, building_id)
+    if not b:
+        raise HTTPException(404)
+    return _render_week(request, p, db, b.name, f"/buildings/{b.id}", list(b.zones),
+                        b.campus.timezone)
+
+
+@router.get("/zones/{zone_id}/week", response_class=HTMLResponse)
+def zone_week(request: Request, zone_id: int, db: Session = Depends(get_db),
+              p: Principal = Depends(current_principal)):
+    z = db.get(Zone, zone_id)
+    if not z:
+        raise HTTPException(404)
+    return _render_week(request, p, db, z.name, f"/zones/{z.id}", [z],
+                        z.campus.timezone if z.campus else get_settings().default_timezone)
+
+
 @router.post("/zones")
 @router.post("/zones/{zone_id}")
 async def save_zone(request: Request, zone_id: int | None = None, db: Session = Depends(get_db),
@@ -355,6 +461,8 @@ async def save_zone(request: Request, zone_id: int | None = None, db: Session = 
     data["room_ids"] = [int(x) for x in form.getlist("room_ids")]
     data["live"] = {"live": True, "dry": False}.get(form.get("live_mode", ""))
     data.pop("live_mode", None)
+    data["profile_id"] = _int(form.get("profile_id"))
+    data["lead_auto"] = "lead_auto" in form
     try:
         body = api.ZoneIn(**data)
     except ValidationError as err:
@@ -379,9 +487,11 @@ def add_campus(name: str = Form(...), timezone: str = Form("America/Chicago"),
 
 @router.post("/campuses/{campus_id}")
 def save_campus(campus_id: int, name: str = Form(...), timezone: str = Form(...),
+                chat_webhook: str | None = Form(None),
                 db: Session = Depends(get_db), p: Principal = Depends(require_admin)):
     try:
-        body = api.CampusIn(name=name.strip(), timezone=timezone.strip())
+        body = api.CampusIn(name=name.strip(), timezone=timezone.strip(),
+                            chat_webhook=None if chat_webhook in (None, "••••") else chat_webhook)
     except ValidationError as err:
         raise HTTPException(422, err.errors()[0]["msg"].removeprefix("Value error, ")) from err
     api.update_campus(campus_id, body, db, p)
@@ -469,7 +579,10 @@ async def save_room(request: Request, room_id: int | None = None,
                           building_id=_int(form.get("building_id")),
                           calendar_id=(form.get("calendar_id") or "").strip() or None,
                           capacity=_int(form.get("capacity")),
-                          zone_ids=[int(x) for x in form.getlist("zone_ids")])
+                          zone_ids=[int(x) for x in form.getlist("zone_ids")],
+                          drives_hvac="drives_hvac" in form,
+                          min_booking_minutes=_int(form.get("min_booking_minutes")) or 0,
+                          ignore_tentative="ignore_tentative" in form)
     except (KeyError, ValueError, ValidationError) as err:
         raise HTTPException(422, "a room needs a name and a campus") from err
     if room_id:
@@ -587,6 +700,9 @@ async def add_block(request: Request, db: Session = Depends(get_db),
     weekdays = sum({int(x) for x in form.getlist("weekdays")})
     data = {k: form.get(k) or None for k in ("zone_id", "group_id", "building_id", "start",
                                              "end", "mode", "heat", "cool", "label")}
+    for k in ("season_start", "season_end"):  # <input type=date> → "MM-DD" (year ignored)
+        v = form.get(k) or ""
+        data[k] = v[5:10] if len(v) == 10 else (v or None)
     try:
         body = api.BlockIn(weekdays=weekdays, **data)
     except ValidationError as err:
@@ -734,7 +850,7 @@ def ecobee_login(mfa_code: str = Form(""), p: Principal = Depends(require_admin)
 
 @router.post("/settings/run/{job}")
 def run_job(request: Request, job: str, p: Principal = Depends(require_admin)):
-    if job not in ("poll", "calendar", "reconcile", "alerts", "history"):
+    if job not in ("poll", "calendar", "reconcile", "alerts", "history", "lead"):
         raise HTTPException(404)
     result = api.run_job(job, p)
     return RedirectResponse(f"/settings?msg={job}: {result}", status_code=303)

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% set section = 'rooms' %}
+{% import "partials/room_ui.html" as ui with context %}
+{% block title %}{{ title }} · week{% endblock %}
+{% block content %}
+<div class="pagehead">
+  <div>
+    <div class="crumbs"><a href="{{ back }}">{{ title }}</a></div>
+    <h1>Week of {{ start.strftime('%b %-d') }}</h1>
+    <p class="muted" style="margin:0">What each zone will do, and why. Hover a bar for times and temperatures.</p>
+  </div>
+  <nav class="pills" aria-label="Week">
+    <a href="?week={{ prev }}">← Previous</a>
+    <a href="?">This week</a>
+    <a href="?week={{ next }}">Next →</a>
+  </nav>
+</div>
+
+<div class="week-legend legend">
+  {% for k in ['occupied', 'unoccupied', 'off', 'custom'] %}<span><i class="sw wk {{ k }}"></i>{{ INTENTS[k] }}</span>{% endfor %}
+  <span><i class="sw wk src-calendar"></i>Booking</span><span><i class="sw wk src-override"></i>Override</span><span><i class="sw wk src-special"></i>Special day</span>
+</div>
+
+{% for w in week %}
+<section class="card week-card">
+  <div class="room-top"><a class="room-name" href="/zones/{{ w.zone.id }}">{{ w.zone.name }}</a>
+    {% if w.zone.rooms %}<span class="room-meta">{{ w.zone.rooms | map(attribute='name') | join(', ') }}</span>{% endif %}</div>
+  <div class="week-grid">
+    <div></div>
+    <div class="week-hours">{% for h in [0, 6, 12, 18] %}<span style="left:{{ h / 24 * 100 }}%">{{ '12a' if h == 0 else ('12p' if h == 12 else (h % 12) ~ ('a' if h < 12 else 'p')) }}</span>{% endfor %}</div>
+    {% for r in w.rows %}
+      <div class="week-day">{{ r.day.strftime('%a %-d') }}</div>
+      <div class="week-bar">
+        {% for g in r.segments %}<i class="wk {{ g.intent }} src-{{ g.source }}" style="left:{{ g.left }}%;width:{{ g.width }}%"
+           title="{{ g.start.strftime('%-I:%M %p') }}–{{ g.end.strftime('%-I:%M %p') }} · {{ INTENTS.get(g.intent, g.intent) }} {{ g.heat | deg }}–{{ g.cool | deg }}° · {{ SOURCES.get(g.source, g.source) }}"></i>{% endfor %}
+      </div>
+    {% endfor %}
+  </div>
+</section>
+{% else %}
+<div class="panel empty"><strong>No zones here yet</strong></div>
+{% endfor %}
+{% endblock %}

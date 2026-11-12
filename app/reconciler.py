@@ -80,9 +80,11 @@ def gather_inputs(s, z: Zone, now: datetime, horizon: timedelta):
             therm_ovs[o.thermostat_id].append(oi)
 
     # Bookings in any room the zone serves. One event booked in several of its rooms counts
-    # once (resource calendars share the organizer's event id).
+    # once (resource calendars share the organizer's event id). Rooms can opt out of driving
+    # HVAC, or skip short / tentative bookings.
     events, seen = [], set()
-    room_of = {r.calendar_id: r.name for r in z.rooms if r.calendar_id}
+    rooms = {r.calendar_id: r for r in z.rooms if r.calendar_id and r.drives_hvac}
+    room_of = {cal: r.name for cal, r in rooms.items()}
     if room_of:
         lead, tail = timedelta(minutes=z.lead_minutes), timedelta(minutes=z.tail_minutes)
         for e in s.scalars(select(CalendarEvent).where(
@@ -90,6 +92,12 @@ def gather_inputs(s, z: Zone, now: datetime, horizon: timedelta):
                 CalendarEvent.starts_at < now + horizon + lead,
                 CalendarEvent.ends_at > now - tail).order_by(CalendarEvent.starts_at)):
             if e.event_id in seen:
+                continue
+            r = rooms[e.calendar_id]
+            if r.ignore_tentative and e.status == "tentative":
+                continue
+            if (r.min_booking_minutes and not e.all_day and aware(e.ends_at) - aware(e.starts_at)
+                    < timedelta(minutes=r.min_booking_minutes)):
                 continue
             seen.add(e.event_id)
             events.append(EventIn(aware(e.starts_at), aware(e.ends_at), e.title or "",
@@ -102,7 +110,9 @@ def gather_inputs(s, z: Zone, now: datetime, horizon: timedelta):
     if z.building_id:
         owner.append(ScheduleBlock.building_id == z.building_id)
     blocks = [BlockIn(b.weekdays, b.start, b.end, b.mode, b.heat, b.cool,
-                      0 if b.zone_id else 1 if b.group_id else 2, b.id)
+                      0 if b.zone_id else 1 if b.group_id else 2, b.id,
+                      (b.season_start, b.season_end) if b.season_start and b.season_end
+                      else None)
               for b in s.scalars(select(ScheduleBlock).where(or_(*owner)))]
 
     # Closures / special hours for the zone's campus or building, around this window.

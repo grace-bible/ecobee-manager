@@ -209,3 +209,16 @@ def test_all_day_bookings_are_ignored_unless_tagged():
                      all_day=True)
     assert resolve(Z, NOW, events=[tagged]).source == "calendar"
     assert parse_hvac_tags("Retreat #hvac:on") == {"on": True}
+
+
+def test_seasonal_blocks_apply_only_in_their_season_each_year():
+    every = 127
+    school = BlockIn(every, time(8), time(17), "occupied", id=1, season=("08-15", "05-31"))
+    summer = BlockIn(every, time(9), time(12), "occupied", id=2, season=("06-01", "08-14"))
+    nov = NOW  # Nov 11: school year (wraps over New Year)
+    assert resolve(Z, nov, blocks=[school, summer]).ref == "block:1"
+    july = NOW.replace(month=7, day=15)
+    assert resolve(Z, july, blocks=[school, summer]).ref == "block:2"
+    assert resolve(Z, july.replace(hour=13), blocks=[school, summer]).source == "default"
+    jan = NOW.replace(year=2027, month=1, day=13)
+    assert resolve(Z, jan, blocks=[school, summer]).ref == "block:1"

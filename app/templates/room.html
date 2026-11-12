@@ -11,7 +11,8 @@
     <h1>{{ zone.name }}</h1>
     {% if zone.rooms %}<p class="muted" style="margin:0">Serves {{ zone.rooms | map(attribute='name') | join(', ') }}</p>{% endif %}
   </div>
-  {% if editable %}<a class="button secondary small" href="/zones/{{ zone.id }}/edit">Zone settings</a>{% endif %}
+  <span class="building-actions"><a class="button secondary small" href="/zones/{{ zone.id }}/week">Week view</a>
+  {% if editable %}<a class="button secondary small" href="/zones/{{ zone.id }}/edit">Zone settings</a>{% endif %}</span>
 </div>
 
 {% if not zone.enabled %}<div class="msg warn">This zone is paused: the app isn't controlling its thermostats.</div>{% endif %}

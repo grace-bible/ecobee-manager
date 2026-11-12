@@ -23,6 +23,7 @@
     <summary>Browse</summary>
     <nav class="tree" aria-label="Campuses, buildings, zones and rooms">
       <a href="/setup" class="t-top" {{ is_cur('overview', none) }}>Overview{% if unassigned %}<span class="t-meta warn">{{ unassigned | length }}</span>{% endif %}</a>
+      <a href="/setup/profiles" class="t-top" {{ is_cur('profiles', none) }}>Comfort profiles</a>
       <ul>
       {% for c in tree %}
         <li class="t-campus">

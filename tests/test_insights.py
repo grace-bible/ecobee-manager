@@ -99,3 +99,11 @@ def test_hourly_runtime_for_short_ranges():
     p = pts([70] * 18, 68, 72, heat_s=[300] * 12 + [0] * 6, cool_s=[0] * 12 + [150] * 6)
     hours = hourly_runtime(p, "America/Chicago")
     assert [(h.hour, heat, cool) for h, heat, cool in hours] == [(6, 1.0, 0.0), (7, 0.0, 0.25)]
+
+
+def test_learned_lead_is_p80_plus_margin_bounded():
+    from app.lead import learn
+    assert learn([20, 25, 30]) is None  # too few
+    assert learn([20, 25, 30, 35, 40, 45, 50, 55, 60, 120]) == 65  # p80 (8th of 10) = 55, +10
+    assert learn([1, 1, 2, 2, 3]) == 15  # floor
+    assert learn([300] * 6) == 180  # ceiling

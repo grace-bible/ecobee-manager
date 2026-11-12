@@ -53,6 +53,16 @@
     {% endif %}
   </div>
 
+  <h2>Booking rules</h2>
+  <div class="panel">
+    <p><label class="check"><input type="checkbox" name="drives_hvac" {% if not room or room.drives_hvac %}checked{% endif %}> Bookings in this room heat or cool its zones</label></p>
+    <div class="formgrid">
+      <label>Ignore bookings shorter than (minutes) <input type="number" name="min_booking_minutes" min="0" max="480" value="{{ room.min_booking_minutes if room else 0 }}"></label>
+      <label class="check" style="align-self:end"><input type="checkbox" name="ignore_tentative" {% if room and room.ignore_tentative %}checked{% endif %}> Ignore tentative bookings</label>
+    </div>
+    <p class="muted" style="font-size:13px">Untick the first for storage, closets or outdoor spaces. All-day bookings only count when tagged <code>#hvac:on</code>.</p>
+  </div>
+
   <h2>Served by</h2>
   <div class="panel">
     {% set mine = room.zones | map(attribute='id') | list if room else [] %}

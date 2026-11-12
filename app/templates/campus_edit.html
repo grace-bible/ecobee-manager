@@ -15,6 +15,9 @@
     <datalist id="tzs">{% for tz in timezones %}<option value="{{ tz }}">{% endfor %}</datalist>
   </div>
   <p class="muted" style="font-size:13px">Schedules, bookings and hold times on this campus use its timezone.</p>
+  <label style="max-width:560px">Google Chat webhook for this campus's alerts
+    <input name="chat_webhook" value="{{ '••••' if campus.chat_webhook else '' }}" placeholder="https://chat.googleapis.com/v1/spaces/…" {% if not admin %}disabled{% endif %} autocomplete="off">
+    <span class="muted" style="font-weight:400">Offline, off-target and thermostat alerts for {{ campus.name }} go here. Leave empty to use the app-wide space; clear it to stop.</span></label>
   {% if admin %}<div class="formfoot"><button>Save campus</button></div>{% endif %}
 </form>
 

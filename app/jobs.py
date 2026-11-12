@@ -23,7 +23,7 @@ def _safe(fn):
 
 def start() -> None:
     global _scheduler
-    from app import alerts, gcal, history, poller, reconciler
+    from app import alerts, gcal, history, lead, poller, reconciler
 
     st = get_settings()
     now = datetime.now(UTC)
@@ -40,6 +40,8 @@ def start() -> None:
     _scheduler.add_job(_safe(history.sync_once), "interval",
                        minutes=st.history_sync_minutes, id="history",
                        next_run_time=now + timedelta(seconds=30))
+    _scheduler.add_job(_safe(lead.learn_once), "interval", hours=24, id="lead",
+                       next_run_time=now + timedelta(minutes=10))
     _scheduler.start()
     log.info("background jobs started (dry_run=%s)", st.dry_run)
 

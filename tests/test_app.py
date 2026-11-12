@@ -13,7 +13,17 @@ def test_flow():
         therms = c.get("/api/v1/thermostats").json()
         ids = [t["id"] for t in therms if "Kids Wing" in t["name"]]
 
-        campus = c.post("/api/v1/campuses", json={"name": "Midtown"}).json()["id"]
+        # A campus that isn't live never touches a thermostat, even with DRY_RUN off.
+        dry = c.post("/api/v1/campuses", json={"name": "Not live yet"}).json()["id"]
+        before = {i: (s.heat_setpoint, s.cool_setpoint) for i, s in get_backend().state.items()}
+        c.post("/api/v1/zones", json={"name": "Dry zone", "campus_id": dry,
+                                      "thermostat_ids": ids})
+        assert reconciler.reconcile_once()["sent"] >= 1
+        assert {i: (s.heat_setpoint, s.cool_setpoint)
+                for i, s in get_backend().state.items()} == before
+        assert all(p["live"] is False for p in reconciler.plan())
+
+        campus = c.post("/api/v1/campuses", json={"name": "Midtown", "live": True}).json()["id"]
         room = c.post("/api/v1/rooms", json={
             "name": "Kids 101", "campus_id": campus,
             "calendar_id": "c_123@resource.calendar.google.com"}).json()["id"]

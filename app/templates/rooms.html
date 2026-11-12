@@ -20,8 +20,9 @@
 {% for c in shown %}
   {% set zones = c.zones | selectattr('enabled') | sort(attribute='name') | list %}
   {% if zones %}{% set any_rooms.v = true %}
-  {% set touch = me.can_write and me.may_touch_campus(c.id) %}
-  {% if campuses | length > 1 %}<h2 class="campus-head">{{ c.name }}</h2>{% endif %}
+  {% set touch = me.can_override and me.may_touch_campus(c.id) %}
+  {% if campuses | length > 1 or not c.live %}<div class="section-head"><h2 class="campus-head"><a class="plain" href="/campuses/{{ c.id }}">{{ c.name }}</a></h2>
+    <span class="building-actions">{% if not c.live and not settings().dry_run %}<span class="chip plain dry-chip">Dry run</span>{% endif %}<a class="button secondary small" href="/campuses/{{ c.id }}">Campus &amp; special days</a></span></div>{% endif %}
   {% for b in c.buildings %}
     {% set bz = zones | selectattr('building_id', 'equalto', b.id) | list %}
     {% if bz %}
@@ -56,7 +57,7 @@
   <div class="section-head"><h2>Groups</h2><span class="muted">Change several zones at once</span></div>
   <div class="rooms">
   {% for g in groups %}
-    {% set touch = me.can_write and (g.zones | rejectattr('campus_id', 'in', me.campus_ids) | list | length == 0 or me.role == 'admin') %}
+    {% set touch = me.can_override and (g.zones | rejectattr('campus_id', 'in', me.campus_ids) | list | length == 0 or me.role == 'admin') %}
     <article class="card">
       <div class="room-top">
         <div><a class="room-name" href="/groups/{{ g.id }}">{{ g.name }}</a>

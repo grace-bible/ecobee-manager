@@ -10,13 +10,13 @@
     {% if group.description %}<p class="muted" style="margin:0">{{ group.description }}</p>{% endif %}
   </div>
   <div class="building-actions">
-    {% if editable %}{{ ui.quick_actions('group', group.id, group.name) }}{% endif %}
+    {% if me.can_override and group.zones | rejectattr('campus_id', 'in', me.campus_ids) | list | length == 0 or me.role == 'admin' %}{{ ui.quick_actions('group', group.id, group.name) }}{% endif %}
     {% if editable %}<a class="button secondary small" href="/groups/{{ group.id }}/edit">Group settings</a>{% endif %}
   </div>
 </div>
 
 <div class="rooms">
-  {% for z in group.zones | sort(attribute='name') if z.enabled %}{{ ui.room_card(z, status[z.id], z.campus.timezone, editable) }}
+  {% for z in group.zones | sort(attribute='name') if z.enabled %}{{ ui.room_card(z, status[z.id], z.campus.timezone, me.can_override and me.may_touch_campus(z.campus_id)) }}
   {% else %}<div class="panel muted">No zones in this group.</div>{% endfor %}
 </div>
 

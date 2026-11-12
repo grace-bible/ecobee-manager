@@ -62,11 +62,27 @@ def record_auth_error(msg: str) -> None:
 
 
 @lru_cache
-def get_backend():
+def raw_backend():
+    """The real backend (fake in dev/tests). Writes go through it only for live zones."""
     st = get_settings()
     if st.ecobee_backend == "fake":
-        inner = FakeBackend()
-    else:
-        inner = EcobeeCloudBackend(st.ecobee_username, st.ecobee_password, st.ecobee_totp_secret,
-                                   load_tokens, save_tokens)
-    return DryRunBackend(inner) if st.dry_run else inner
+        return FakeBackend()
+    return EcobeeCloudBackend(st.ecobee_username, st.ecobee_password, st.ecobee_totp_secret,
+                              load_tokens, save_tokens)
+
+
+@lru_cache
+def dry_backend():
+    return DryRunBackend(raw_backend())
+
+
+def get_backend():
+    """Reads (and writes when DRY_RUN is on, the master switch, everything is dry)."""
+    return dry_backend() if get_settings().dry_run else raw_backend()
+
+
+def zone_is_live(z) -> bool:
+    """Holds are really sent only when DRY_RUN is off and the zone (or its campus) is live."""
+    if get_settings().dry_run:
+        return False
+    return bool(z.live if z.live is not None else (z.campus.live if z.campus else False))

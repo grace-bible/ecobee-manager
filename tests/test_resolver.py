@@ -154,3 +154,58 @@ def test_same_booking_in_two_rooms_counts_once():
     b = EventIn(NOW, NOW + timedelta(hours=1), "Youth night", None, "evt1", room="Kids 102")
     d = resolve(Z, NOW, events=[a, b])
     assert d.source == "calendar" and d.ref == "event:evt1"
+
+
+# ---- special days (closures / special hours), campus overrides, all-day bookings ----
+
+def _day(**kw):
+    from app.resolver import DayIn
+    base = {"first": NOW.date(), "last": NOW.date(), "id": 1}
+    return DayIn(**(base | kw))
+
+
+def test_closure_replaces_the_weekly_schedule_but_not_bookings():
+    block = BlockIn(127, time(8), time(17), "occupied", id=1)
+    closed = _day(closed=True, closed_mode="off", label="Thanksgiving")
+    d = resolve(Z, NOW, blocks=[block], days=[closed])
+    assert (d.source, d.intent, d.ref) == ("special", "off", "day:1")
+    # A booking still wins…
+    assert resolve(Z, NOW, events=[ev(10, 11)], blocks=[block], days=[closed]).source == "calendar"
+    # …unless the closure says to ignore bookings too.
+    hard = _day(closed=True, ignore_bookings=True)
+    assert resolve(Z, NOW, events=[ev(10, 11)], days=[hard]).source == "special"
+    # Other days are untouched.
+    other = _day(first=NOW.date() + timedelta(days=1), last=NOW.date() + timedelta(days=2))
+    assert resolve(Z, NOW, blocks=[block], days=[other]).source == "schedule"
+
+
+def test_special_hours_and_building_beats_campus():
+    hours = _day(closed=False, start=time(9), end=time(12), mode="occupied", level=1, id=2)
+    assert resolve(Z, NOW, days=[hours]).intent == "occupied"
+    assert resolve(Z, NOW.replace(hour=13), days=[hours]).intent == "unoccupied"
+    bld = _day(closed=True, closed_mode="off", level=0, id=3)
+    assert resolve(Z, NOW, days=[hours, bld]).ref == "day:3"
+
+
+def test_next_change_sees_a_closure_starting_at_midnight():
+    tomorrow = _day(first=NOW.date() + timedelta(days=1), last=NOW.date() + timedelta(days=1),
+                    closed=True, closed_mode="off")
+    late = NOW.replace(hour=22)
+    assert next_change(Z, late, days=[tomorrow]) == datetime(2026, 11, 12, 0, 0, tzinfo=CT)
+
+
+def test_campus_override_is_below_building():
+    c = OverrideIn(4, "off", None, None, NOW - timedelta(hours=1), NOW + timedelta(hours=1), 5)
+    b = OverrideIn(3, "occupied", None, None, NOW - timedelta(hours=1), NOW + timedelta(hours=1), 6)
+    assert resolve(Z, NOW, [c, b]).ref == "override:6"
+    assert resolve(Z, NOW, [c], events=[ev(10, 11)]).intent == "off"  # beats bookings
+
+
+def test_all_day_bookings_are_ignored_unless_tagged():
+    allday = EventIn(NOW.replace(hour=0), NOW.replace(hour=0) + timedelta(days=1), "Painting",
+                     None, "a1", all_day=True)
+    assert resolve(Z, NOW, events=[allday]).source == "default"
+    tagged = EventIn(allday.starts_at, allday.ends_at, "Retreat", {"on": True}, "a2",
+                     all_day=True)
+    assert resolve(Z, NOW, events=[tagged]).source == "calendar"
+    assert parse_hvac_tags("Retreat #hvac:on") == {"on": True}

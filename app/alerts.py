@@ -1,5 +1,6 @@
 """Alerts to a Google Chat webhook (docs/SPEC.md §9): offline, off target, login and
-calendar failures, and ecobee's own device alerts (equipment faults, temperature alerts).
+calendar failures, ecobee's own device alerts (equipment faults, temperature alerts), and
+managed thermostats not in auto mode (holds can't both heat and cool).
 
 Every minute `check_once()` works out which incidents are true *right now*, opens an
 `alert` row for each new one and resolves rows whose condition cleared. Chat gets one
@@ -18,6 +19,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from app.checks import mode_issue
 from app.config import get_settings
 from app.db import session_scope
 from app.models import (
@@ -46,6 +48,7 @@ class ThermoIn:
     cool: float | None = None
     occupied_for: timedelta | None = None
     ecobee_alerts: tuple[dict, ...] = ()  # active alerts on the device itself
+    hvac_mode: str | None = None  # only set for managed thermostats (the app relies on auto)
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,8 @@ def find_incidents(
                 msg = f"{t.name} is {t.current_temp:g}°F, cooling to {t.cool:g}°F for {mins} min"
                 out[f"setpoint:{t.identifier}"] = ("setpoint", msg)
 
+        if t.connected and (issue := mode_issue(t.name, t.hvac_mode)):
+            out[f"mode:{t.identifier}"] = ("mode", issue.message)
         for a in t.ecobee_alerts:
             ref = a.get("ref") or a.get("text", "")[:60]
             out[f"ecobee:{t.identifier}:{ref}"] = ("ecobee", f"{t.name}: {a.get('text', '')}")
@@ -102,16 +107,16 @@ def find_incidents(
 
 # ---------- gathering (I/O) ----------
 
-def _occupied_for(cfg, now, ovs, events, blocks, deadband, look_back: timedelta,
+def _occupied_for(cfg, now, ovs, events, blocks, days, deadband, look_back: timedelta,
                   step=timedelta(minutes=5)) -> timedelta | None:
     """How long the zone has resolved to an occupied intent without a break (≤ look_back)."""
     from app.resolver import resolve
-    if resolve(cfg, now, ovs, events, blocks, deadband).intent not in OCCUPIED_INTENTS:
+    if resolve(cfg, now, ovs, events, blocks, deadband, days).intent not in OCCUPIED_INTENTS:
         return None
     t = now
     while now - t < look_back:
         prev = t - step
-        if resolve(cfg, prev, ovs, events, blocks, deadband).intent not in OCCUPIED_INTENTS:
+        if resolve(cfg, prev, ovs, events, blocks, deadband, days).intent not in OCCUPIED_INTENTS:
             break
         t = prev
     return now - t
@@ -132,17 +137,17 @@ def gather(now: datetime) -> dict[str, tuple[str, str]]:
         for z in zones:
             cfg = zone_cfg(z)
             # Look back far enough that blocks/events that began an hour ago are included.
-            zone_ovs, therm_ovs, events, blocks = gather_inputs(
+            zone_ovs, therm_ovs, events, blocks, days = gather_inputs(
                 s, z, now - setpoint_after, setpoint_after + timedelta(minutes=5))
             for t in z.thermostats:
                 managed.add(t.id)
                 ovs = zone_ovs + therm_ovs.get(t.id, [])
-                d = resolve(cfg, now, ovs, events, blocks, st.min_deadband_f)
-                occ = _occupied_for(cfg, now, ovs, events, blocks, st.min_deadband_f,
+                d = resolve(cfg, now, ovs, events, blocks, st.min_deadband_f, days)
+                occ = _occupied_for(cfg, now, ovs, events, blocks, days, st.min_deadband_f,
                                     setpoint_after)
                 therms.append(ThermoIn(t.identifier, t.name, t.connected, aware(t.last_seen),
                                        t.current_temp, d.heat, d.cool, occ,
-                                       tuple(t.ecobee_alerts or ())))
+                                       tuple(t.ecobee_alerts or ()), t.hvac_mode))
         for t in s.scalars(select(Thermostat)):
             if t.id not in managed:
                 therms.append(ThermoIn(t.identifier, t.name, t.connected, aware(t.last_seen),

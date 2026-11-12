@@ -5,7 +5,7 @@
 {% block detail %}
 <div class="pagehead">
   <div><div class="crumbs"><a href="/setup">Places</a></div><h1>{{ campus.name }}</h1></div>
-  <a class="button secondary small" href="/?campus={{ campus.id }}">View on Rooms</a>
+  <a class="button secondary small" href="/campuses/{{ campus.id }}">Campus &amp; special days</a>
 </div>
 
 <form class="panel" method="post" action="/campuses/{{ campus.id }}">
@@ -17,6 +17,20 @@
   <p class="muted" style="font-size:13px">Schedules, bookings and hold times on this campus use its timezone.</p>
   {% if admin %}<div class="formfoot"><button>Save campus</button></div>{% endif %}
 </form>
+
+<h2>Go live</h2>
+<div class="panel live-panel">
+  {% if settings().dry_run %}
+    <p><strong>Dry run for everything.</strong> <code>DRY_RUN</code> is on for the whole app, so nothing is sent to any thermostat. Turn it off in the environment first; each campus then goes live on its own from here.</p>
+  {% elif campus.live %}
+    <p><span class="chip occupied">Live</span> Changes for {{ campus.name }} are sent to its thermostats.</p>
+    {% if admin %}<form method="post" action="/campuses/{{ campus.id }}/live" onsubmit="return confirm('Put {{ campus.name }} back in dry run? Current holds expire on their own.')"><input type="hidden" name="live" value="off"><button class="secondary">Back to dry run</button></form>{% endif %}
+  {% else %}
+    <p><span class="chip plain dry-chip">Dry run</span> Changes for {{ campus.name }} are recorded in Activity but not sent. Check Activity and the health checks, then go live.</p>
+    {% if admin %}<form method="post" action="/campuses/{{ campus.id }}/live" onsubmit="return confirm('Go live on {{ campus.name }}? The app will start sending holds to its thermostats.')"><input type="hidden" name="live" value="on"><button>Go live on {{ campus.name }}</button></form>{% endif %}
+  {% endif %}
+  <p class="muted" style="font-size:13px">A zone can also go live on its own, ahead of its campus, from its settings.</p>
+</div>
 
 <div class="section-head"><h2>Buildings</h2></div>
 <div class="tablewrap"><table>

@@ -27,7 +27,12 @@ spaces. One container + Postgres; web UI and REST API; zones follow Google Works
 - **History:** ecobee's 5-minute data is kept for 400 days. Room pages chart it, and
   **Insights** shows heating/cooling hours, how long rooms take to warm up or cool down, and
   rooms conditioned with nobody in them (where a sensor exists).
-- Ships in **dry run**: reads are live, writes only go to the audit log until `DRY_RUN=false`.
+- Ships in **dry run**: reads are live, writes only go to the audit log. `DRY_RUN=false`
+  arms the app; then each campus goes live on its own (Setup → campus → Go live).
+- **Closures and special hours** per campus or building replace the weekly schedule on
+  those days; a whole-campus override handles a snow day.
+- **Roles:** admin, campus manager (setup and schedules on their campuses), operator
+  (temporary changes only, on their campuses), viewer.
 
 ## Deploy (Komodo, same as stream-scheduler)
 
@@ -73,9 +78,11 @@ Off Komodo: `docker compose up -d` (loopback only) or add
    python -m app.spike resume <identifier>
    ```
 5. **Deploy** (above). Then Settings → *Log in to ecobee*. Thermostats appear after the
-   first poll. Add campuses, zones (room calendar + thermostats + weekly schedule) and
-   groups. Watch the audit log in dry run, then set `DRY_RUN=false`. Give campus managers
-   their role under Settings → Users.
+   first poll. In Setup: add campuses and buildings, import rooms from Google, create zones
+   (thermostats + the rooms they serve). Fix anything under Setup → Health checks (Auto
+   mode, a flat-setback program on each thermostat). Watch Activity in dry run, set
+   `DRY_RUN=false`, then go live one campus at a time. Give campus managers and operators
+   their roles under Settings → Users.
 
 ## Develop
 

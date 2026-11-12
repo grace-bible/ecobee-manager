@@ -3,6 +3,7 @@
 {% import "partials/room_ui.html" as ui with context %}
 {% block title %}{{ zone.name }}{% endblock %}
 {% set tz = zone.campus.timezone if zone.campus else none %}
+{% set can_change = me.can_override and me.may_touch_campus(zone.campus_id) %}
 {% block content %}
 <div class="pagehead">
   <div>
@@ -25,7 +26,7 @@
       {% if s.humidity is not none %}<span>Humidity <strong>{{ s.humidity }}%</strong></span>{% endif %}
       <span>Thermostats <strong>{{ s.online }}/{{ s.thermostats }} online</strong></span>
     </div>
-    {% if editable %}{{ ui.quick_actions('zone', zone.id, zone.name, s, s.heat, s.cool) }}{% endif %}
+    {% if can_change %}{{ ui.quick_actions('zone', zone.id, zone.name, s, s.heat, s.cool) }}{% endif %}
   </div>
 </section>
 

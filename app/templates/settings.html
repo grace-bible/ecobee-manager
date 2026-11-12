@@ -44,14 +44,14 @@
 {% if me.role == 'admin' %}
 <h2>Users</h2>
 <div class="panel">
-  <p class="muted">People appear here after their first visit through Cloudflare Access. Anyone in ADMIN_EMAILS is always an admin. Campus managers can change zones, groups, schedules and overrides on their campuses only.</p>
+  <p class="muted">People appear here after their first visit through Cloudflare Access. Anyone in ADMIN_EMAILS is always an admin. Operators can make temporary changes (In use, Off, Adjust, Back to schedule) on their campuses. Campus managers can also change setup and schedules there. Admins can do everything.</p>
   <table>
     <thead><tr><th>User</th><th>Last visit</th><th>Access</th></tr></thead>
     <tbody>{% for u in users %}
       <tr><td>{{ u.email }}</td><td class="num">{{ u.last_login | local }}</td>
         <td><form method="post" action="/settings/users/{{ u.id }}" class="bulk">
           <select name="role" aria-label="Role for {{ u.email }}">
-            {% for r in ['viewer', 'campus_manager', 'admin'] %}<option value="{{ r }}" {% if u.role == r %}selected{% endif %}>{{ r | replace('_', ' ') }}</option>{% endfor %}
+            {% for r in ['viewer', 'operator', 'campus_manager', 'admin'] %}<option value="{{ r }}" {% if u.role == r %}selected{% endif %}>{{ r | replace('_', ' ') }}</option>{% endfor %}
           </select>
           {% for c in all_campuses %}<label class="check"><input type="checkbox" name="campus_ids" value="{{ c.id }}" {% if c.id in (u.campus_ids or []) %}checked{% endif %}> {{ c.name }}</label>{% endfor %}
           <button class="secondary small">Save</button>
@@ -71,7 +71,7 @@
     <thead><tr><th>Name</th><th>Access</th><th class="hide-sm">Created</th><th></th></tr></thead>
     <tbody>{% for k in keys %}
       <tr><td><strong>{{ k.name }}</strong></td>
-        <td>{{ k.role | replace('_', ' ') }}{% if k.role == 'campus_manager' %}: {{ all_campuses | selectattr('id', 'in', k.campus_ids) | map(attribute='name') | join(', ') }}{% endif %}</td>
+        <td>{{ k.role | replace('_', ' ') }}{% if k.role in ['campus_manager', 'operator'] %}: {{ all_campuses | selectattr('id', 'in', k.campus_ids) | map(attribute='name') | join(', ') }}{% endif %}</td>
         <td class="hide-sm num muted">{{ k.created_at | local }}</td>
         <td class="right"><form class="inline" method="post" action="/settings/api-keys/{{ k.id }}/delete" onsubmit="return confirm('Revoke {{ k.name }}? Anything using it stops working.')"><button class="danger small">Revoke</button></form></td></tr>
     {% else %}<tr><td colspan="4" class="muted">No API keys.</td></tr>{% endfor %}</tbody>
@@ -81,6 +81,7 @@
     <label>Access
       <select name="role">
         <option value="viewer">Viewer (read only)</option>
+        <option value="operator">Operator (temporary changes only)</option>
         <option value="campus_manager">Campus manager</option>
         <option value="admin">Admin</option>
       </select>

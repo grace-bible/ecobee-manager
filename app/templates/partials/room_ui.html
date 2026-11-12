@@ -18,6 +18,7 @@
   {% if s.override %}
     <span class="tag-override">{% if s.override.scope != 'zone' %}{{ s.override.group or s.override.scope | capitalize }} override{% else %}Override{% endif %}</span>
     by {{ s.override.created_by.split('@')[0] }}{% if s.override.reason %} · {{ s.override.reason }}{% endif %}
+  {% elif s.source == 'special' %}{{ s.notes[0] if s.notes else 'Special day' }}
   {% elif s.source == 'calendar' %}Booked{% if s.event_room %} in {{ s.event_room }}{% endif %}: {{ s.event }}
   {% elif s.source == 'schedule' %}Weekly schedule
   {% else %}No schedule right now{% endif %}
@@ -26,7 +27,7 @@
 {%- endmacro %}
 
 {# One-tap changes for a zone, group or building. kind: 'zone' | 'group' | 'building'. #}
-{% macro target_field(kind) %}{{ {'group': 'group_id', 'building': 'building_id'}.get(kind, 'zone_ids') }}{% endmacro %}
+{% macro target_field(kind) %}{{ {'group': 'group_id', 'building': 'building_id', 'campus': 'campus_id'}.get(kind, 'zone_ids') }}{% endmacro %}
 {% macro quick_actions(kind, id, name, s=none, heat=68, cool=72) %}
 <div class="actions">
   {% if s and s.override and s.override.scope == 'zone' %}
@@ -62,8 +63,9 @@
         {% else %}<span class="run {{ s.running }}">{{ s.running | capitalize }}</span>{% if s.humidity is not none %} · {{ s.humidity }}% humidity{% endif %}{% endif %}
       </div>
     </div>
-    {{ chip(s.intent) }}
+    <div class="chips">{{ chip(s.intent) }}{% if not s.live %}<span class="chip plain dry-chip" title="Changes are recorded, not sent to the thermostats">Dry run</span>{% endif %}</div>
   </div>
+  {% for i in s.issues %}<div class="card-issue" role="note">⚠ {{ i }}</div>{% endfor %}
   <div class="room-mid">
     {{ temp(s.temp) }}
     <div class="target"><div class="label">Target</div>{{ band(s.heat, s.cool) }}</div>
@@ -79,7 +81,7 @@
   <form method="post" action="/overrides" class="dlg">
     <h2 id="adjust-title">Adjust</h2>
     <p class="sub" id="adjust-sub">Temporary. The schedule takes over again afterwards.</p>
-    <input type="hidden" name="zone_ids"><input type="hidden" name="group_id"><input type="hidden" name="building_id">
+    <input type="hidden" name="zone_ids"><input type="hidden" name="group_id"><input type="hidden" name="building_id"><input type="hidden" name="campus_id">
     <fieldset>
       <legend class="muted" style="font-size:13px;font-weight:550;margin-bottom:6px">Set the room to</legend>
       <div class="seg">
@@ -132,8 +134,8 @@
   document.addEventListener('click', e => {
     const b = e.target.closest('[data-adjust]');
     if (!b) return;
-    const field = {zone: 'zone_ids', group: 'group_id', building: 'building_id'}[b.dataset.kind];
-    for (const n of ['zone_ids', 'group_id', 'building_id']) {
+    const field = {zone: 'zone_ids', group: 'group_id', building: 'building_id', campus: 'campus_id'}[b.dataset.kind];
+    for (const n of ['zone_ids', 'group_id', 'building_id', 'campus_id']) {
       f.elements[n].value = n === field ? b.dataset.id : '';
       f.elements[n].disabled = n !== field;
     }

@@ -10,7 +10,7 @@ Full design: `docs/SPEC.md` — read it before changing behavior.
 
 ```bash
 python -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
-pytest -q                      # 61 tests, ~9 s
+pytest -q                      # 73 tests, ~10 s
 ruff check app tests           # must stay clean
 # Local run with 6 simulated thermostats (nothing real touched):
 ECOBEE_BACKEND=fake DEV_AUTH_EMAIL=you@example.org \
@@ -23,7 +23,7 @@ ECOBEE_BACKEND=fake DEV_AUTH_EMAIL=you@example.org \
 
 | Path | What |
 |---|---|
-| `app/resolver.py` | **Pure** scheduling logic: override > calendar > schedule > default, guardrails, `next_change`. No I/O — keep it that way and test it in `tests/test_resolver.py`. |
+| `app/resolver.py` | **Pure** scheduling logic: override > calendar > special day > schedule > default, guardrails, `next_change`. No I/O — keep it that way and test it in `tests/test_resolver.py`. |
 | `app/models.py` | Campus → Building → Zone (HVAC: thermostats, comfort, schedule) ↔ Room (bookable, own Google calendar; `zone_room` many-to-many). Groups cut across buildings. |
 | `app/reconciler.py` | Resolver output vs. what was last sent → batched `set_hold`. `plan()` is read-only. |
 | `app/ecobee/backend.py` | `ThermostatBackend` protocol + `EcobeeCloudBackend`. The only code that talks to ecobee. |
@@ -36,6 +36,7 @@ ECOBEE_BACKEND=fake DEV_AUTH_EMAIL=you@example.org \
 | `app/api.py` | REST `/api/v1`. The UI reuses these functions — put logic here, not in `web.py`. |
 | `app/web.py`, `app/templates/` | Jinja + HTMX UI. Home (`/`, `rooms.html`) and room pages are for people adjusting rooms; configuration lives under `/setup` (Places: a campus → building → zone → room tree beside each detail page, `setup_layout.html`). Room status comes from `api.zone_status`. |
 | `app/jobs.py` | APScheduler: poll, calendar sync, reconcile, alerts. |
+| `app/checks.py` | **Pure** device checks: thermostat not in Auto; its own program (the fallback) not a safe setback. |
 | `app/alerts.py` | Google Chat alerts. `find_incidents()` is pure; `check_once()` opens/resolves `alert` rows. |
 | `app/migrations/` | Alembic. `init_db()` runs `upgrade head` at startup. |
 | `app/spike.py` | `python -m app.spike` — direct real-account checks (bypasses DRY_RUN). |
@@ -55,8 +56,13 @@ ECOBEE_BACKEND=fake DEV_AUTH_EMAIL=you@example.org \
   decimals, in the thermostat's local time); `zoneOccupancy` is 0 forever on units with no
   sensor, so only trust it once it has been 1; max **25 thermostats per
   selection** (batch with `_chunks`); don't full-fetch a thermostat more than every 3 min.
-- `DRY_RUN=true` is the default. In dry run, `app_hold_source` is prefixed `dry:` so the
-  reconciler re-sends for real once dry run is turned off — keep that behavior.
+- `DRY_RUN=true` is the default and is a master switch: nothing is sent anywhere while it's
+  on. With it off, only **live** zones write (campus `live`, or the zone's own `live`
+  override; new campuses start in dry run). Non-live writes go through `DryRunBackend` and
+  `app_hold_source` is prefixed `dry:` so the reconciler re-sends for real once the zone goes
+  live — keep that behavior.
+- Roles: admin > campus_manager (setup, schedules, special days on their campuses) >
+  operator (overrides only, on their campuses) > viewer. Overrides use `require_override`.
 - A change made at the wall is respected until the zone's next transition; the
   reconciler only re-sends on target change or < 15 min before its hold expires.
 - Auth: the app verifies `Cf-Access-Jwt-Assertion` itself; never trust a header-only

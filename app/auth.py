@@ -26,22 +26,31 @@ from app.models import ApiKey, AppUser, utcnow
 
 log = logging.getLogger(__name__)
 API_KEY_PREFIX = "emk_"
+# Roles, most to least: admin (everything), campus_manager (setup, schedules and changes on
+# their campuses), operator (temporary changes on their campuses only), viewer (read-only).
+SCOPED_ROLES = ("campus_manager", "operator")
 
 
 @dataclass
 class Principal:
     name: str  # email or api key name
-    role: str  # admin / campus_manager / viewer
+    role: str  # admin / campus_manager / operator / viewer
     campus_ids: list[int] = field(default_factory=list)
     is_machine: bool = False
 
     @property
     def can_write(self) -> bool:
+        """Setup and schedules (and everything an operator can do)."""
         return self.role in ("admin", "campus_manager")
+
+    @property
+    def can_override(self) -> bool:
+        """Temporary changes: In use / Off / Adjust / Back to schedule."""
+        return self.role in ("admin", "campus_manager", "operator")
 
     def may_touch_campus(self, campus_id: int | None) -> bool:
         return self.role == "admin" or (
-            self.role == "campus_manager" and campus_id in (self.campus_ids or []))
+            self.role in SCOPED_ROLES and campus_id in (self.campus_ids or []))
 
 
 @lru_cache
@@ -118,6 +127,12 @@ def current_principal(request: Request, db: Session = Depends(get_db)) -> Princi
 
 def require_write(p: Principal = Depends(current_principal)) -> Principal:
     if not p.can_write:
+        raise HTTPException(403, "read-only access")
+    return p
+
+
+def require_override(p: Principal = Depends(current_principal)) -> Principal:
+    if not p.can_override:
         raise HTTPException(403, "read-only access")
     return p
 

@@ -1,11 +1,12 @@
 """Database tables. See docs/SPEC.md §4."""
 
-from datetime import UTC, datetime, time
+from datetime import UTC, date, datetime, time
 
 from sqlalchemy import (
     JSON,
     Boolean,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -15,6 +16,7 @@ from sqlalchemy import (
     Text,
     Time,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -37,6 +39,8 @@ class Campus(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True)
     timezone: Mapped[str] = mapped_column(String(64), default="America/Chicago")
+    # Live = holds are really sent (when DRY_RUN is off). New campuses start in dry run.
+    live: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     zones: Mapped[list["Zone"]] = relationship(back_populates="campus")
     thermostats: Mapped[list["Thermostat"]] = relationship(back_populates="campus")
@@ -90,6 +94,9 @@ class Thermostat(Base):
     last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     timezone: Mapped[str | None] = mapped_column(String(64))  # thermostat's own, from ecobee
     ecobee_alerts: Mapped[list | None] = mapped_column(JSON)  # active alerts on the device
+    # The device's own program (its fallback if the app stops): {"climates": [{name, heat,
+    # cool}], "schedule_climates": [names used in its weekly schedule]}
+    program: Mapped[dict | None] = mapped_column(JSON)
 
     campus: Mapped[Campus | None] = relationship(back_populates="thermostats")
     zone: Mapped["Zone | None"] = relationship(back_populates="thermostats")
@@ -140,6 +147,7 @@ class Zone(Base):
     campus_id: Mapped[int] = mapped_column(ForeignKey("campus.id"))
     building_id: Mapped[int | None] = mapped_column(ForeignKey("building.id", ondelete="SET NULL"))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    live: Mapped[bool | None] = mapped_column(Boolean)  # None = follow the campus
 
     # Bookings in any of the zone's rooms start conditioning this early / keep it this long.
     lead_minutes: Mapped[int] = mapped_column(Integer, default=45)
@@ -200,6 +208,7 @@ class Override(Base):
     zone_id: Mapped[int | None] = mapped_column(ForeignKey("zone.id", ondelete="CASCADE"))
     group_id: Mapped[int | None] = mapped_column(ForeignKey("zone_group.id", ondelete="CASCADE"))
     building_id: Mapped[int | None] = mapped_column(ForeignKey("building.id", ondelete="CASCADE"))
+    campus_id: Mapped[int | None] = mapped_column(ForeignKey("campus.id", ondelete="CASCADE"))
     mode: Mapped[str] = mapped_column(String(16), default="custom")  # occupied/unoccupied/off/custom
     heat: Mapped[float | None] = mapped_column(Float)
     cool: Mapped[float | None] = mapped_column(Float)
@@ -220,6 +229,7 @@ class CalendarEvent(Base):
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     status: Mapped[str] = mapped_column(String(16), default="confirmed")
     hvac_tag: Mapped[dict | None] = mapped_column(JSON)  # parsed #nohvac / #hvac:… tags
+    all_day: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     __table_args__ = (UniqueConstraint("calendar_id", "event_id"),)
 
@@ -306,4 +316,25 @@ class RuntimeSample(Base):
     cool_s: Mapped[int] = mapped_column(Integer, default=0)
     fan_s: Mapped[int] = mapped_column(Integer, default=0)
     occupied: Mapped[bool | None] = mapped_column(Boolean)
+
+
+class SpecialDay(Base):
+    """A closure or special hours on given dates for a whole campus or one building.
+    Replaces the weekly schedule on those days; bookings still count unless ignored."""
+
+    __tablename__ = "special_day"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campus_id: Mapped[int] = mapped_column(ForeignKey("campus.id", ondelete="CASCADE"))
+    building_id: Mapped[int | None] = mapped_column(ForeignKey("building.id", ondelete="CASCADE"))
+    first: Mapped[date] = mapped_column(Date)
+    last: Mapped[date] = mapped_column(Date)  # inclusive
+    closed: Mapped[bool] = mapped_column(Boolean, default=True)
+    start: Mapped[time | None] = mapped_column(Time)
+    end: Mapped[time | None] = mapped_column(Time)
+    mode: Mapped[str] = mapped_column(String(16), default="occupied")
+    heat: Mapped[float | None] = mapped_column(Float)
+    cool: Mapped[float | None] = mapped_column(Float)
+    closed_mode: Mapped[str] = mapped_column(String(16), default="unoccupied")
+    ignore_bookings: Mapped[bool] = mapped_column(Boolean, default=False)
+    label: Mapped[str | None] = mapped_column(String(100))
 

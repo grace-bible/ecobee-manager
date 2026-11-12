@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -13,13 +13,16 @@ from sqlalchemy.orm import Session, selectinload
 
 from app import alerts, gcal, history, poller, reconciler
 from app.auth import (
+    SCOPED_ROLES,
     Principal,
     current_principal,
     hash_key,
     new_api_key,
     require_admin,
+    require_override,
     require_write,
 )
+from app.checks import mode_issue, program_issue
 from app.config import get_settings
 from app.db import get_db
 from app.ecobee.backend import AuthRequired, BackendError
@@ -42,6 +45,7 @@ from app.models import (
     Override,
     Room,
     ScheduleBlock,
+    SpecialDay,
     Thermostat,
     Zone,
     ZoneGroup,
@@ -49,7 +53,7 @@ from app.models import (
     utcnow,
 )
 from app.resolver import next_change, resolve
-from app.services import get_backend, record_auth_error
+from app.services import get_backend, record_auth_error, zone_is_live
 
 router = APIRouter(prefix="/api/v1")
 Mode = Literal["occupied", "unoccupied", "off", "custom"]
@@ -60,6 +64,7 @@ Mode = Literal["occupied", "unoccupied", "off", "custom"]
 class CampusIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     timezone: str = "America/Chicago"
+    live: bool | None = None  # None = leave as is (new campuses start in dry run)
 
     @model_validator(mode="after")
     def _check(self):
@@ -88,6 +93,44 @@ class RoomIn(BaseModel):
     zone_ids: list[int] | None = None  # None = leave the room's zones as they are
 
 
+class SpecialDayIn(BaseModel):
+    """Closure or special hours on given dates, for a campus or one of its buildings."""
+
+    campus_id: int
+    building_id: int | None = None
+    first: date
+    last: date | None = None  # defaults to `first`
+    closed: bool = True  # False = special hours start..end
+    start: str | None = None  # "HH:MM", special hours only
+    end: str | None = None
+    mode: Mode = "occupied"  # during special hours
+    heat: float | None = None
+    cool: float | None = None
+    closed_mode: Literal["unoccupied", "off"] = "unoccupied"
+    ignore_bookings: bool = False
+    label: str | None = Field(None, max_length=100)
+
+    @model_validator(mode="after")
+    def _check(self):
+        self.last = self.last or self.first
+        if self.last < self.first:
+            raise ValueError("the last day is before the first")
+        if (self.last - self.first).days > 366:
+            raise ValueError("a special day can't span more than a year")
+        if not self.closed:
+            if not (self.start and self.end):
+                raise ValueError("special hours need a start and end time")
+            try:
+                if time.fromisoformat(self.start) >= time.fromisoformat(self.end):
+                    raise ValueError("special hours must end after they start")
+            except ValueError as err:
+                raise ValueError(str(err) if "special" in str(err)
+                                 else f"times are HH:MM, got {self.start!r}–{self.end!r}") from err
+            if self.mode == "custom" and self.heat is None and self.cool is None:
+                raise ValueError("custom mode needs heat and/or cool")
+        return self
+
+
 class GoogleImportIn(BaseModel):
     """Which campus each Google Workspace building's rooms go to ("" = rooms with no
     building). Buildings left out are skipped."""
@@ -100,6 +143,7 @@ class ZoneIn(BaseModel):
     campus_id: int
     building_id: int | None = None
     enabled: bool = True
+    live: bool | None = None  # None = follow the campus
     room_ids: list[int] | None = None  # None = leave the zone's rooms as they are
     lead_minutes: int = Field(45, ge=0, le=240)
     tail_minutes: int = Field(15, ge=0, le=240)
@@ -125,7 +169,7 @@ class GroupIn(BaseModel):
 
 
 class OverrideIn(BaseModel):
-    target: Literal["thermostat", "zone", "group", "building"]
+    target: Literal["thermostat", "zone", "group", "building", "campus"]
     target_id: int
     mode: Mode = "custom"
     heat: float | None = None
@@ -172,19 +216,19 @@ class BlockIn(BaseModel):
 
 
 class UserIn(BaseModel):
-    role: Literal["admin", "campus_manager", "viewer"]
+    role: Literal["admin", "campus_manager", "operator", "viewer"]
     campus_ids: list[int] = []
 
 
 class ApiKeyIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
-    role: Literal["admin", "campus_manager", "viewer"] = "viewer"
+    role: Literal["admin", "campus_manager", "operator", "viewer"] = "viewer"
     campus_ids: list[int] = []
 
     @model_validator(mode="after")
     def _check(self):
-        if self.role == "campus_manager" and not self.campus_ids:
-            raise ValueError("a campus manager key needs at least one campus")
+        if self.role in SCOPED_ROLES and not self.campus_ids:
+            raise ValueError(f"a {self.role.replace('_', ' ')} key needs at least one campus")
         return self
 
 
@@ -216,9 +260,11 @@ def target_campuses(db: Session, kind: str, target_id: int | None) -> list[int |
     if target_id is None:
         return []
     obj = db.get({"thermostat": Thermostat, "zone": Zone, "group": ZoneGroup,
-                  "building": Building}[kind], target_id)
+                  "building": Building, "campus": Campus}[kind], target_id)
     if obj is None:
         raise HTTPException(404, f"{kind} not found")
+    if kind == "campus":
+        return [obj.id]
     return [z.campus_id for z in obj.zones] if kind == "group" else [obj.campus_id]
 
 
@@ -256,7 +302,7 @@ def thermostat_dict(t: Thermostat) -> dict:
 
 def zone_dict(z: Zone) -> dict:
     return {c: getattr(z, c) for c in (
-        "id", "name", "campus_id", "building_id", "enabled", "lead_minutes",
+        "id", "name", "campus_id", "building_id", "enabled", "live", "lead_minutes",
         "tail_minutes", "occupied_heat", "occupied_cool", "unoccupied_heat", "unoccupied_cool",
         "min_setpoint", "max_setpoint")} | {"thermostat_ids": [t.id for t in z.thermostats],
                                             "room_ids": [r.id for r in z.rooms],
@@ -294,10 +340,10 @@ def zone_status(db: Session, z: Zone, now: datetime | None = None,
     now = now or utcnow()
     cfg = reconciler.zone_cfg(z)
     deadband = get_settings().min_deadband_f
-    zone_ovs, _, events, blocks = reconciler.gather_inputs(db, z, now, look_ahead)
-    d = resolve(cfg, now, zone_ovs, events, blocks, deadband)
-    until = next_change(cfg, now, zone_ovs, events, blocks, horizon=look_ahead)
-    nxt = (resolve(cfg, until, zone_ovs, events, blocks, deadband)
+    zone_ovs, _, events, blocks, days = reconciler.gather_inputs(db, z, now, look_ahead)
+    d = resolve(cfg, now, zone_ovs, events, blocks, deadband, days)
+    until = next_change(cfg, now, zone_ovs, events, blocks, horizon=look_ahead, days=days)
+    nxt = (resolve(cfg, until, zone_ovs, events, blocks, deadband, days)
            if until < now + look_ahead else None)
 
     override = event = event_room = None
@@ -305,9 +351,11 @@ def zone_status(db: Session, z: Zone, now: datetime | None = None,
     if kind == "override":
         o = db.get(Override, int(ref_id))
         if o:
-            scope = "zone" if o.zone_id == z.id else "group" if o.group_id else "building"
+            scope = ("zone" if o.zone_id == z.id else "group" if o.group_id
+                     else "building" if o.building_id else "campus")
             owner = (db.get(ZoneGroup, o.group_id) if o.group_id
-                     else db.get(Building, o.building_id) if o.building_id else None)
+                     else db.get(Building, o.building_id) if o.building_id
+                     else db.get(Campus, o.campus_id) if o.campus_id else None)
             override = {"id": o.id, "scope": scope, "group": owner.name if owner else None,
                         "created_by": o.created_by, "reason": o.reason, "ends_at": o.ends_at}
     elif kind == "event":
@@ -324,6 +372,9 @@ def zone_status(db: Session, z: Zone, now: datetime | None = None,
         "running": _running([t.equipment_running or "" for t in online]),
         "thermostats": len(z.thermostats), "online": len(online),
         "heat": d.heat, "cool": d.cool, "intent": d.intent, "source": d.source,
+        "issues": [i.message for t in z.thermostats
+                   if (i := mode_issue(t.name or t.identifier, t.hvac_mode))],
+        "live": zone_is_live(z), "notes": d.notes,
         "override": override, "event": event, "event_room": event_room,
         "rooms": [r.name for r in z.rooms], "until": until if nxt else None,
         "next": {"heat": nxt.heat, "cool": nxt.cool, "intent": nxt.intent,
@@ -377,7 +428,7 @@ def me(p: Principal = Depends(current_principal)):
 
 @router.get("/campuses")
 def list_campuses(db: Session = Depends(get_db), _=Depends(current_principal)):
-    return [{"id": c.id, "name": c.name, "timezone": c.timezone}
+    return [{"id": c.id, "name": c.name, "timezone": c.timezone, "live": c.live}
             for c in db.scalars(select(Campus).order_by(Campus.name))]
 
 
@@ -471,7 +522,7 @@ def list_overrides(db: Session = Depends(get_db), _=Depends(current_principal)):
     rows = db.scalars(select(Override).where(Override.cancelled.is_(False),
                                              Override.ends_at > utcnow()))
     return [{c: getattr(o, c) for c in ("id", "thermostat_id", "zone_id", "group_id",
-                                        "building_id", "mode",
+                                        "building_id", "campus_id", "mode",
                                         "heat", "cool", "starts_at", "ends_at", "created_by",
                                         "reason")} for o in rows]
 
@@ -488,7 +539,7 @@ def list_audit(limit: int = 100, db: Session = Depends(get_db), _=Depends(curren
 @router.post("/campuses", status_code=201)
 def create_campus(body: CampusIn, db: Session = Depends(get_db), p=Depends(require_admin)):
     _name_free(db, Campus, body.name, what="campus")
-    c = Campus(name=body.name, timezone=body.timezone)
+    c = Campus(name=body.name, timezone=body.timezone, live=bool(body.live))
     db.add(c)
     db.flush()
     audit(db, p, "create_campus", c.name)
@@ -524,9 +575,12 @@ def update_campus(campus_id: int, body: CampusIn, db: Session = Depends(get_db),
     clash = db.scalar(select(Campus).where(Campus.name == body.name, Campus.id != c.id))
     if clash:
         raise HTTPException(409, f"another campus already has the name {body.name!r}")
+    if body.live is not None and body.live != c.live:
+        audit(db, p, "campus_live" if body.live else "campus_dry_run", c.name)
+        c.live = body.live
     c.name, c.timezone = body.name, body.timezone
     audit(db, p, "update_campus", c.name, body.model_dump())
-    return {"id": c.id, "name": c.name, "timezone": c.timezone}
+    return {"id": c.id, "name": c.name, "timezone": c.timezone, "live": c.live}
 
 
 @router.delete("/campuses/{campus_id}")
@@ -621,6 +675,79 @@ def delete_zone(zone_id: int, db: Session = Depends(get_db), p=Depends(require_w
         t.zone_id = None  # they fall back to their own program as the last hold expires
     db.delete(z)
     audit(db, p, "delete_zone", z.name)
+    return {"ok": True}
+
+
+def health_checks(db: Session) -> list[dict]:
+    """Managed thermostats the app can't fully control, or whose own program isn't a safe
+    fallback. For Setup."""
+    out = []
+    for z in db.scalars(select(Zone).where(Zone.enabled.is_(True)).options(
+            selectinload(Zone.thermostats))):
+        for t in z.thermostats:
+            name = t.name or t.identifier
+            for issue in (mode_issue(name, t.hvac_mode),
+                          program_issue(name, t.program, z.unoccupied_heat, z.unoccupied_cool)):
+                if issue:
+                    out.append({"thermostat_id": t.id, "zone_id": z.id, "zone": z.name,
+                                "kind": issue.kind, "message": issue.message})
+    return out
+
+
+@router.get("/health-checks")
+def get_health_checks(db: Session = Depends(get_db), _=Depends(current_principal)):
+    return health_checks(db)
+
+
+# ---------- special days ----------
+
+def special_day_dict(d: SpecialDay) -> dict:
+    return {c: getattr(d, c) for c in (
+        "id", "campus_id", "building_id", "first", "last", "closed", "mode", "heat", "cool",
+        "closed_mode", "ignore_bookings", "label")} | {
+        "start": d.start.strftime("%H:%M") if d.start else None,
+        "end": d.end.strftime("%H:%M") if d.end else None}
+
+
+@router.get("/special-days")
+def list_special_days(campus_id: int | None = None, upcoming: bool = True,
+                      db: Session = Depends(get_db), _=Depends(current_principal)):
+    q = select(SpecialDay).order_by(SpecialDay.first)
+    if campus_id is not None:
+        q = q.where(SpecialDay.campus_id == campus_id)
+    if upcoming:
+        q = q.where(SpecialDay.last >= (utcnow() - timedelta(days=1)).date())
+    return [special_day_dict(d) for d in db.scalars(q)]
+
+
+@router.post("/special-days", status_code=201)
+def create_special_day(body: SpecialDayIn, db: Session = Depends(get_db),
+                       p=Depends(require_write)):
+    _check_campus(p, body.campus_id)
+    _campus_or_404(db, body.campus_id)
+    if body.building_id is not None:
+        _same_campus(db.get(Building, body.building_id), body.campus_id, "building")
+    d = SpecialDay(campus_id=body.campus_id, building_id=body.building_id, first=body.first,
+                   last=body.last, closed=body.closed,
+                   start=time.fromisoformat(body.start) if body.start and not body.closed
+                   else None,
+                   end=time.fromisoformat(body.end) if body.end and not body.closed else None,
+                   mode=body.mode, heat=body.heat, cool=body.cool, closed_mode=body.closed_mode,
+                   ignore_bookings=body.ignore_bookings, label=body.label)
+    db.add(d)
+    db.flush()
+    audit(db, p, "create_special_day", body.label or str(body.first), body.model_dump(mode="json"))
+    return {"id": d.id}
+
+
+@router.delete("/special-days/{day_id}")
+def delete_special_day(day_id: int, db: Session = Depends(get_db), p=Depends(require_write)):
+    d = db.get(SpecialDay, day_id)
+    if not d:
+        raise HTTPException(404, "special day not found")
+    _check_campus(p, d.campus_id)
+    db.delete(d)
+    audit(db, p, "delete_special_day", d.label or str(d.first))
     return {"ok": True}
 
 
@@ -875,7 +1002,7 @@ def delete_block(block_id: int, db: Session = Depends(get_db), p=Depends(require
 
 def create_override(db: Session, p: Principal, body: OverrideIn) -> Override:
     model = {"thermostat": Thermostat, "zone": Zone, "group": ZoneGroup,
-             "building": Building}[body.target]
+             "building": Building, "campus": Campus}[body.target]
     target = db.get(model, body.target_id)
     if not target:
         raise HTTPException(404, f"{body.target} not found")
@@ -894,16 +1021,18 @@ def create_override(db: Session, p: Principal, body: OverrideIn) -> Override:
 
 
 @router.post("/overrides", status_code=201)
-def post_override(body: OverrideIn, db: Session = Depends(get_db), p=Depends(require_write)):
+def post_override(body: OverrideIn, db: Session = Depends(get_db),
+                  p=Depends(require_override)):
     return {"id": create_override(db, p, body).id}
 
 
 @router.delete("/overrides/{override_id}")
-def cancel_override(override_id: int, db: Session = Depends(get_db), p=Depends(require_write)):
+def cancel_override(override_id: int, db: Session = Depends(get_db),
+                    p=Depends(require_override)):
     o = db.get(Override, override_id)
     if not o:
         raise HTTPException(404, "override not found")
-    for kind in ("thermostat", "zone", "group"):
+    for kind in ("thermostat", "zone", "group", "building", "campus"):
         _check_target(db, p, kind, getattr(o, f"{kind}_id"))
     o.cancelled = True
     audit(db, p, "cancel_override", f"override:{o.id}")
@@ -942,7 +1071,7 @@ def update_user(user_id: int, body: UserIn, db: Session = Depends(get_db),
         raise HTTPException(404, "user not found")
     _check_campuses(db, body.campus_ids)
     u.role = body.role
-    u.campus_ids = body.campus_ids if body.role == "campus_manager" else []
+    u.campus_ids = body.campus_ids if body.role in SCOPED_ROLES else []
     audit(db, p, "update_user", u.email, body.model_dump())
     return {"id": u.id, "email": u.email, "role": u.role, "campus_ids": u.campus_ids}
 
@@ -969,7 +1098,7 @@ def create_api_key(body: ApiKeyIn, db: Session = Depends(get_db), p=Depends(requ
     if db.scalar(select(ApiKey).where(ApiKey.name == body.name)):
         raise HTTPException(409, f"an API key named {body.name!r} already exists")
     raw = new_api_key()
-    campus_ids = body.campus_ids if body.role == "campus_manager" else []
+    campus_ids = body.campus_ids if body.role in SCOPED_ROLES else []
     db.add(ApiKey(name=body.name, key_hash=hash_key(raw), role=body.role, campus_ids=campus_ids))
     audit(db, p, "create_api_key", body.name, {"role": body.role, "campus_ids": campus_ids})
     return {"name": body.name, "key": raw, "role": body.role, "campus_ids": campus_ids,

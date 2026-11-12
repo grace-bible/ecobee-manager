@@ -60,6 +60,36 @@
   </table>
 </div>
 
+<h2 id="api-keys">API keys</h2>
+<div class="panel">
+  <p class="muted">For n8n, scripts and other tools: <code>Authorization: Bearer emk_…</code>. A key gets the same access as a person with that role. Give automations a campus-manager key for the campuses they need; admin keys can also manage users and keys.</p>
+  {% if new_key %}
+  <div class="msg"><strong>Key created for {{ new_key.name }}.</strong> Copy it now; it won't be shown again.
+    <div style="margin-top:8px"><code style="user-select:all;word-break:break-all">{{ new_key.key }}</code></div></div>
+  {% endif %}
+  <table>
+    <thead><tr><th>Name</th><th>Access</th><th class="hide-sm">Created</th><th></th></tr></thead>
+    <tbody>{% for k in keys %}
+      <tr><td><strong>{{ k.name }}</strong></td>
+        <td>{{ k.role | replace('_', ' ') }}{% if k.role == 'campus_manager' %}: {{ all_campuses | selectattr('id', 'in', k.campus_ids) | map(attribute='name') | join(', ') }}{% endif %}</td>
+        <td class="hide-sm num muted">{{ k.created_at | local }}</td>
+        <td class="right"><form class="inline" method="post" action="/settings/api-keys/{{ k.id }}/delete" onsubmit="return confirm('Revoke {{ k.name }}? Anything using it stops working.')"><button class="danger small">Revoke</button></form></td></tr>
+    {% else %}<tr><td colspan="4" class="muted">No API keys.</td></tr>{% endfor %}</tbody>
+  </table>
+  <form method="post" action="/settings/api-keys" class="bulk" style="margin-top:16px">
+    <label>Name <input name="name" required placeholder="e.g. n8n Midtown"></label>
+    <label>Access
+      <select name="role">
+        <option value="viewer">Viewer (read only)</option>
+        <option value="campus_manager">Campus manager</option>
+        <option value="admin">Admin</option>
+      </select>
+    </label>
+    {% for c in all_campuses %}<label class="check"><input type="checkbox" name="campus_ids" value="{{ c.id }}"> {{ c.name }}</label>{% endfor %}
+    <button>Create key</button>
+  </form>
+</div>
+
 <h2>Run now</h2>
 <div class="panel bulk">
   {% for job in ['poll', 'calendar', 'reconcile', 'alerts'] %}

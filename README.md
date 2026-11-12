@@ -55,7 +55,9 @@ Off Komodo: `docker compose up -d` (loopback only) or add
 3. **Cloudflare.** Create a tunnel (copy its token to `TUNNEL_TOKEN`) with a public
    hostname → `http://app:8000`, and a self-hosted Access application on that hostname;
    copy its AUD tag to `CF_ACCESS_AUD`. For n8n/automation, add a service-token policy and
-   create an app API key (`POST /api/v1/api-keys`).
+   create an app API key in Setup → System → API keys (or `POST /api/v1/api-keys` with
+   `{"name", "role", "campus_ids"}`). Keys get the same roles as people; give automations
+   a campus-manager key for the campuses they need, not an admin key.
 4. **Spike first.** Before deploying, on one test thermostat:
    ```bash
    python -m app.spike login     # uses ECOBEE_* from .env; add --mfa 123456 if asked

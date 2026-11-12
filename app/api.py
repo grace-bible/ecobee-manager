@@ -129,6 +129,18 @@ class UserIn(BaseModel):
     campus_ids: list[int] = []
 
 
+class ApiKeyIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    role: Literal["admin", "campus_manager", "viewer"] = "viewer"
+    campus_ids: list[int] = []
+
+    @model_validator(mode="after")
+    def _check(self):
+        if self.role == "campus_manager" and not self.campus_ids:
+            raise ValueError("a campus manager key needs at least one campus")
+        return self
+
+
 class LoginIn(BaseModel):
     mfa_code: str | None = None
 
@@ -536,19 +548,47 @@ def update_user(user_id: int, body: UserIn, db: Session = Depends(get_db),
     u = db.get(AppUser, user_id)
     if not u:
         raise HTTPException(404, "user not found")
-    for cid in body.campus_ids:
-        if not db.get(Campus, cid):
-            raise HTTPException(400, f"campus {cid} not found")
+    _check_campuses(db, body.campus_ids)
     u.role = body.role
     u.campus_ids = body.campus_ids if body.role == "campus_manager" else []
     audit(db, p, "update_user", u.email, body.model_dump())
     return {"id": u.id, "email": u.email, "role": u.role, "campus_ids": u.campus_ids}
 
 
+def _check_campuses(db: Session, campus_ids: list[int]) -> None:
+    for cid in campus_ids:
+        if not db.get(Campus, cid):
+            raise HTTPException(400, f"campus {cid} not found")
+
+
+def api_key_dict(k: ApiKey) -> dict:
+    return {"id": k.id, "name": k.name, "role": k.role, "campus_ids": k.campus_ids or [],
+            "created_at": k.created_at}
+
+
+@router.get("/api-keys")
+def list_api_keys(db: Session = Depends(get_db), _=Depends(require_admin)):
+    return [api_key_dict(k) for k in db.scalars(select(ApiKey).order_by(ApiKey.name))]
+
+
 @router.post("/api-keys", status_code=201)
-def create_api_key(name: str, can_write: bool = False, db: Session = Depends(get_db),
-                   p=Depends(require_admin)):
+def create_api_key(body: ApiKeyIn, db: Session = Depends(get_db), p=Depends(require_admin)):
+    _check_campuses(db, body.campus_ids)
+    if db.scalar(select(ApiKey).where(ApiKey.name == body.name)):
+        raise HTTPException(409, f"an API key named {body.name!r} already exists")
     raw = new_api_key()
-    db.add(ApiKey(name=name, key_hash=hash_key(raw), can_write=can_write))
-    audit(db, p, "create_api_key", name, {"can_write": can_write})
-    return {"name": name, "key": raw, "note": "shown once; store it now"}
+    campus_ids = body.campus_ids if body.role == "campus_manager" else []
+    db.add(ApiKey(name=body.name, key_hash=hash_key(raw), role=body.role, campus_ids=campus_ids))
+    audit(db, p, "create_api_key", body.name, {"role": body.role, "campus_ids": campus_ids})
+    return {"name": body.name, "key": raw, "role": body.role, "campus_ids": campus_ids,
+            "note": "shown once; store it now"}
+
+
+@router.delete("/api-keys/{key_id}")
+def revoke_api_key(key_id: int, db: Session = Depends(get_db), p=Depends(require_admin)):
+    k = db.get(ApiKey, key_id)
+    if not k:
+        raise HTTPException(404, "API key not found")
+    db.delete(k)
+    audit(db, p, "revoke_api_key", k.name)
+    return {"ok": True}

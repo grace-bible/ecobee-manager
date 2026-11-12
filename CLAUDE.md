@@ -10,7 +10,7 @@ Full design: `docs/SPEC.md` — read it before changing behavior.
 
 ```bash
 python -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
-pytest -q                      # 31 tests, ~1 s
+pytest -q                      # 33 tests, ~1 s
 ruff check app tests           # must stay clean
 # Local run with 6 simulated thermostats (nothing real touched):
 ECOBEE_BACKEND=fake DEV_AUTH_EMAIL=you@example.org \
@@ -54,7 +54,7 @@ ECOBEE_BACKEND=fake DEV_AUTH_EMAIL=you@example.org \
 - A change made at the wall is respected until the zone's next transition; the
   reconciler only re-sends on target change or < 15 min before its hold expires.
 - Auth: the app verifies `Cf-Access-Jwt-Assertion` itself; never trust a header-only
-  email. `DEV_AUTH_EMAIL` must stay refused when `ENVIRONMENT=production`.
+  email. API keys carry a role + campus ids like people; never grant admin implicitly. `DEV_AUTH_EMAIL` must stay refused when `ENVIRONMENT=production`.
 - Times are stored UTC; use `models.aware()` on values read back (SQLite returns naive).
 - Secrets (ecobee password, TOTP secret, service-account JSON, `.env`) never go in the repo.
 

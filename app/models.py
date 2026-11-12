@@ -200,7 +200,10 @@ class ApiKey(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True)
     key_hash: Mapped[str] = mapped_column(String(128), unique=True)
-    can_write: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Same roles as people: a write key is a campus manager for named campuses unless it
+    # was explicitly made an admin.
+    role: Mapped[str] = mapped_column(String(16), default="viewer")  # admin/campus_manager/viewer
+    campus_ids: Mapped[list | None] = mapped_column(JSON)  # scope for campus_manager
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% set section = 'setup' %}{% set sub = 'zones' %}
+{#- A tree of everything (campus → building → zone → rooms it serves) beside the page's
+    detail. `current` is (kind, id) of what's open. -#}
+{% macro is_cur(kind, id) %}{{ 'aria-current=page' if current[0] == kind and current[1] == id }}{% endmacro %}
+{% macro zone_item(z) %}
+  <li><a href="/zones/{{ z.id }}/edit" class="t-zone" {{ is_cur('zone', z.id) }}>
+      <span class="t-ico" aria-hidden="true">◎</span>{{ z.name }}
+      <span class="t-meta">{{ z.thermostats | length }}</span></a>
+    {% if z.rooms %}<ul>{% for r in z.rooms %}<li><a href="/rooms/{{ r.id }}/edit" class="t-room" {{ is_cur('room', r.id) }}><span class="t-ico" aria-hidden="true">▢</span>{{ r.name }}{% if r.calendar_id %}<span class="t-cal" title="Has a room calendar">📅</span>{% endif %}</a></li>{% endfor %}</ul>{% endif %}
+  </li>
+{% endmacro %}
+{% macro place(c, b) %}
+  {% set bid = b.id if b else none %}
+  {% set zs = c.zones | selectattr('building_id', 'equalto', bid) | sort(attribute='name') | list %}
+  {% set loose = c.rooms | selectattr('building_id', 'equalto', bid) | rejectattr('zones') | list %}
+  {% for z in zs %}{{ zone_item(z) }}{% endfor %}
+  {% for r in loose %}<li><a href="/rooms/{{ r.id }}/edit" class="t-room loose" {{ is_cur('room', r.id) }} title="Not served by any zone yet"><span class="t-ico" aria-hidden="true">▢</span>{{ r.name }}<span class="t-meta warn">no zone</span></a></li>{% endfor %}
+{% endmacro %}
+{% block content %}
+<div class="setup-grid">
+  <details class="tree-wrap" open>
+    <summary>Browse</summary>
+    <nav class="tree" aria-label="Campuses, buildings, zones and rooms">
+      <a href="/setup" class="t-top" {{ is_cur('overview', none) }}>Overview{% if unassigned %}<span class="t-meta warn">{{ unassigned | length }}</span>{% endif %}</a>
+      <ul>
+      {% for c in tree %}
+        <li class="t-campus">
+          <a href="/setup/campuses/{{ c.id }}" {{ is_cur('campus', c.id) }}><span class="t-ico" aria-hidden="true">⌂</span>{{ c.name }}</a>
+          <ul>
+            {% for b in c.buildings %}
+            <li class="t-building">
+              <a href="/setup/buildings/{{ b.id }}" {{ is_cur('building', b.id) }}><span class="t-ico" aria-hidden="true">▤</span>{{ b.name }}</a>
+              <ul>{{ place(c, b) }}</ul>
+            </li>
+            {% endfor %}
+            {% set nb = place(c, none) %}
+            {% if nb | trim %}<li class="t-building"><span class="t-label">No building</span><ul>{{ nb }}</ul></li>{% endif %}
+          </ul>
+        </li>
+      {% endfor %}
+      </ul>
+      {% if me.can_write %}
+      <div class="t-add">
+        <a href="/zones/new" {{ is_cur('new-zone', none) }}>+ Zone</a>
+        <a href="/rooms/new" {{ is_cur('new-room', none) }}>+ Room</a>
+      </div>
+      {% endif %}
+      <p class="t-legend"><span>◎ zone (thermostats)</span><span>▢ room</span><span>📅 has calendar</span></p>
+    </nav>
+  </details>
+  <div class="detail">
+    {% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
+    {% block detail %}{% endblock %}
+  </div>
+</div>
+<script>
+// Phones: start the tree collapsed so the page's content comes first.
+if (matchMedia('(max-width: 760px)').matches) document.querySelector('.tree-wrap').open = false;
+</script>
+{% endblock %}

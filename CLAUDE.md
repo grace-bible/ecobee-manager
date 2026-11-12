@@ -10,7 +10,7 @@ Full design: `docs/SPEC.md` — read it before changing behavior.
 
 ```bash
 python -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
-pytest -q                      # 56 tests, ~8 s
+pytest -q                      # 59 tests, ~9 s
 ruff check app tests           # must stay clean
 # Local run with 6 simulated thermostats (nothing real touched):
 ECOBEE_BACKEND=fake DEV_AUTH_EMAIL=you@example.org \
@@ -34,7 +34,7 @@ ECOBEE_BACKEND=fake DEV_AUTH_EMAIL=you@example.org \
 | `app/gcal.py` | Workspace resource list + incremental event sync (service account, domain-wide delegation). |
 | `app/auth.py` | Cloudflare Access JWT verification, roles, API keys, dev bypass. |
 | `app/api.py` | REST `/api/v1`. The UI reuses these functions — put logic here, not in `web.py`. |
-| `app/web.py`, `app/templates/` | Jinja + HTMX UI. Home (`/`, `rooms.html`) and room pages are for people adjusting rooms; configuration lives under `/setup`. Room status comes from `api.zone_status`. |
+| `app/web.py`, `app/templates/` | Jinja + HTMX UI. Home (`/`, `rooms.html`) and room pages are for people adjusting rooms; configuration lives under `/setup` (Places: a campus → building → zone → room tree beside each detail page, `setup_layout.html`). Room status comes from `api.zone_status`. |
 | `app/jobs.py` | APScheduler: poll, calendar sync, reconcile, alerts. |
 | `app/alerts.py` | Google Chat alerts. `find_incidents()` is pure; `check_once()` opens/resolves `alert` rows. |
 | `app/migrations/` | Alembic. `init_db()` runs `upgrade head` at startup. |

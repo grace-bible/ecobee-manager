@@ -1,0 +1,61 @@
+{% extends "setup_layout.html" %}
+{% block title %}{{ campus.name }}{% endblock %}
+{% set admin = me.role == 'admin' %}
+{% set touch = me.can_write and me.may_touch_campus(campus.id) %}
+{% block detail %}
+<div class="pagehead">
+  <div><div class="crumbs"><a href="/setup">Places</a></div><h1>{{ campus.name }}</h1></div>
+  <a class="button secondary small" href="/?campus={{ campus.id }}">View on Rooms</a>
+</div>
+
+<form class="panel" method="post" action="/campuses/{{ campus.id }}">
+  <div class="formgrid">
+    <label>Campus name <input name="name" required value="{{ campus.name }}" {% if not admin %}disabled{% endif %}></label>
+    <label>Timezone <input name="timezone" required list="tzs" value="{{ campus.timezone }}" {% if not admin %}disabled{% endif %}></label>
+    <datalist id="tzs">{% for tz in timezones %}<option value="{{ tz }}">{% endfor %}</datalist>
+  </div>
+  <p class="muted" style="font-size:13px">Schedules, bookings and hold times on this campus use its timezone.</p>
+  {% if admin %}<div class="formfoot"><button>Save campus</button></div>{% endif %}
+</form>
+
+<div class="section-head"><h2>Buildings</h2></div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Building</th><th class="right">Zones</th><th class="right">Rooms</th></tr></thead>
+  <tbody>
+  {% for b in campus.buildings %}
+    <tr><td><a href="/setup/buildings/{{ b.id }}"><strong>{{ b.name }}</strong></a></td>
+      <td class="right num">{{ b.zones | length }}</td><td class="right num">{{ b.rooms | length }}</td></tr>
+  {% else %}<tr><td colspan="3" class="muted">No buildings yet.</td></tr>{% endfor %}
+  </tbody>
+</table></div>
+{% if touch %}
+<form class="bulk" method="post" action="/buildings">
+  <input type="hidden" name="campus_id" value="{{ campus.id }}">
+  <label>New building <input name="name" required placeholder="e.g. Education wing"></label>
+  <button class="secondary">Add building</button>
+</form>
+{% endif %}
+
+{% set zs = campus.zones | selectattr('building_id', 'none') | sort(attribute='name') | list %}
+{% set rs = campus.rooms | selectattr('building_id', 'none') | list %}
+{% if zs or rs %}
+<div class="section-head"><h2>Not in a building</h2><span class="muted">Give these a building from their settings</span></div>
+<div class="tablewrap"><table><tbody>
+  {% for z in zs %}<tr><td><span class="t-ico">◎</span> <a href="/zones/{{ z.id }}/edit">{{ z.name }}</a></td><td class="muted">zone · {{ z.thermostats | length }} thermostat{{ 's' if z.thermostats | length != 1 }}</td></tr>{% endfor %}
+  {% for r in rs %}<tr><td><span class="t-ico">▢</span> <a href="/rooms/{{ r.id }}/edit">{{ r.name }}</a></td><td class="muted">room{% if not r.zones %} · no zone{% endif %}</td></tr>{% endfor %}
+</tbody></table></div>
+{% endif %}
+
+{% if admin %}
+<h2>Remove campus</h2>
+<form class="panel" method="post" action="/campuses/{{ campus.id }}/delete" onsubmit="return confirm('Remove {{ campus.name }}?')">
+  {% if campus.buildings or campus.zones or campus.rooms %}
+    <p class="muted">Only an empty campus can be removed. Remove or move its buildings, zones and rooms first.</p>
+    <button class="danger" disabled>Remove campus</button>
+  {% else %}
+    <p class="muted">It has no buildings, zones or rooms. Its thermostats (if any) are kept.</p>
+    <button class="danger">Remove campus</button>
+  {% endif %}
+</form>
+{% endif %}
+{% endblock %}

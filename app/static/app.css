@@ -270,12 +270,6 @@ dialog::backdrop { background: rgb(15 15 14 / .45); }
 .stat .muted { font-size: 13.5px; }
 .hint { font-size: 13px; padding: 6px 10px; border-radius: 8px; background: var(--ok-soft); color: var(--ok); }
 .hint.warn { background: var(--warn-soft); color: var(--warn); }
-.minibars { display: flex; gap: 6px; align-items: end; height: 70px; margin-top: 4px; }
-.minibars .mb-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; }
-.minibars .bars { flex: 1; width: 100%; display: flex; gap: 2px; align-items: end; justify-content: center; }
-.minibars i { display: block; width: 40%; max-width: 12px; border-radius: 3px 3px 0 0; min-height: 1px; }
-.minibars i.h { background: var(--heat); } .minibars i.c { background: var(--cool); }
-.minibars span { font-size: 11px; color: var(--muted); }
 
 /* ---------- buildings ---------- */
 a.plain { color: inherit; }
@@ -289,10 +283,50 @@ a.plain { color: inherit; }
 .inline-edit { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
 .setup-building h3 { text-transform: none; letter-spacing: -.01em; font-size: 16px; color: var(--ink); }
 [id] { scroll-margin-top: 72px; }
-.minibars.dense { gap: 2px; }
-.minibars.dense i { width: 45%; }
-.minibars.dense span { white-space: nowrap; }
-.minibars .mb-col { min-width: 0; }
-.minibars.dense .day span { width: 0; overflow: visible; display: flex; justify-content: center; font-size: 10px; }
-.minibars.dense .bars { gap: 1px; }
-.minibars.dense i { width: 50%; }
+
+/* ---------- setup: tree + detail ---------- */
+.setup-grid { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 24px; align-items: start; }
+.tree-wrap { position: sticky; top: 72px; max-height: calc(100vh - 92px); overflow: auto;
+             background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+             box-shadow: var(--shadow); }
+.tree-wrap > summary { display: none; }
+.tree { padding: 10px 8px 12px; font-size: 14px; }
+.tree ul { list-style: none; margin: 0; padding: 0; }
+.tree ul ul { padding-left: 14px; }
+.tree a, .tree .t-label { display: flex; align-items: center; gap: 7px; padding: 4px 8px; border-radius: 7px;
+                          color: var(--ink-2); line-height: 1.3; }
+.tree a:hover { background: var(--surface-2); text-decoration: none; }
+.tree a[aria-current=page] { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
+.tree .t-top { font-weight: 650; color: var(--ink); margin-bottom: 4px; }
+.tree .t-campus > a { font-weight: 650; color: var(--ink); margin-top: 6px; }
+.tree .t-building > a, .tree .t-label { font-weight: 600; }
+.tree .t-label { color: var(--muted); font-size: 13px; }
+.tree .t-room { color: var(--muted); font-size: 13.5px; }
+.tree .t-room.loose { color: var(--ink-2); }
+.t-ico { width: 14px; text-align: center; color: var(--muted); flex: none; font-size: 12px; }
+.t-meta { margin-left: auto; font-size: 11.5px; color: var(--muted); background: var(--surface-2);
+          border-radius: 999px; padding: 0 7px; }
+.t-meta.warn { background: var(--warn-soft); color: var(--warn); }
+.t-cal { font-size: 11px; margin-left: 2px; }
+.t-add { display: flex; gap: 6px; margin: 12px 4px 0; }
+.t-add a { flex: 1; justify-content: center; border: 1px dashed var(--line-strong); font-weight: 600; color: var(--accent); }
+.t-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11.5px; color: var(--muted); margin: 12px 8px 0; }
+.detail > .pagehead:first-child, .detail > .msg + .pagehead { margin-top: 0; }
+.place-card { color: inherit; gap: 6px; }
+.place-card:hover { text-decoration: none; border-color: var(--line-strong); }
+.place-card .counts { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13.5px; color: var(--ink-2); margin-top: 6px; }
+@media (max-width: 760px) {
+  .setup-grid { grid-template-columns: 1fr; gap: 16px; }
+  .tree-wrap { position: static; max-height: none; }
+  .tree-wrap > summary { display: block; padding: 10px 14px; font-weight: 650; cursor: pointer; }
+}
+
+/* equipment running: one stacked bar per hour/day (heating below, cooling above) */
+.minibars { display: flex; gap: 3px; align-items: stretch; justify-content: space-between; height: 84px; margin-top: 6px; }
+.minibars .mb-col { flex: 1 1 0; min-width: 0; max-width: 44px; display: flex; flex-direction: column; gap: 4px; }
+.minibars .stack { flex: 1; display: flex; flex-direction: column; justify-content: flex-end;
+                   background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+.minibars .stack i { display: block; width: 100%; }
+.minibars i.h { background: var(--heat); } .minibars i.c { background: var(--cool); }
+.minibars span { height: 13px; font-size: 10.5px; color: var(--muted); white-space: nowrap;
+                 align-self: center; width: 0; display: flex; justify-content: center; }

@@ -1,12 +1,11 @@
-{% extends "base.html" %}
-{% set section = 'setup' %}{% set sub = 'zones' %}
+{% extends "setup_layout.html" %}
 {% block title %}{{ room.name if room else 'New room' }}{% endblock %}
 {% set cur_campus = room.campus_id if room else preset_campus %}
 {% set cur_building = room.building_id if room else preset_building %}
-{% block content %}
+{% block detail %}
 <div class="pagehead">
   <div>
-    <div class="crumbs"><a href="/setup">Buildings &amp; rooms</a></div>
+    <div class="crumbs"><a href="/setup">Places</a>{% if room %} / <a href="/setup/campuses/{{ room.campus_id }}">{{ room.campus.name }}</a>{% if room.building %} / <a href="/setup/buildings/{{ room.building_id }}">{{ room.building.name }}</a>{% endif %}{% endif %}</div>
     <h1>{{ room.name if room else 'New room' }}</h1>
     <p class="muted" style="margin:0">A room is a space people book. Its calendar tells the zones that serve it when to heat or cool.</p>
   </div>

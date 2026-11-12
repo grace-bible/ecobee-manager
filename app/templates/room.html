@@ -71,12 +71,12 @@
   <div class="card stat">
     <div class="label">Equipment running <span class="muted">· {{ range_label }}</span></div>
     <div class="big"><span class="heat">{{ insights.runtime_total.heat_h }} h</span> <span class="cool">{{ insights.runtime_total.cool_h }} h</span></div>
-    {% set maxh = (insights.runtime | map(attribute='heat_h') | list + insights.runtime | map(attribute='cool_h') | list + [0.1]) | max %}
-    <div class="minibars {{ 'dense' if insights.runtime | length > 10 }}" aria-label="Heating and cooling hours per {{ insights.runtime_step }}">
+    {% set maxh = ((insights.runtime | map(attribute='heat_h') | list | zip_sum(insights.runtime | map(attribute='cool_h') | list)) + [0.1]) | max %}
+    <div class="minibars" aria-label="Heating and cooling hours per {{ insights.runtime_step }}">
       {% for d in insights.runtime %}
       <div class="mb-col" title="{{ d.start.strftime('%a %b %-d, %-I %p' if insights.runtime_step == 'hour' else '%a %b %-d') }}: heating {{ d.heat_h }} h, cooling {{ d.cool_h }} h">
-        <div class="bars"><i class="h" style="height:{{ (d.heat_h / maxh * 100) | round }}%"></i><i class="c" style="height:{{ (d.cool_h / maxh * 100) | round }}%"></i></div>
-        <span>{% if insights.runtime | length <= 10 or loop.index0 % (insights.runtime | length // 5) == 0 %}{{ d.label }}{% endif %}</span></div>
+        <div class="stack"><i class="c" style="height:{{ (d.cool_h / maxh * 100) | round(1) }}%"></i><i class="h" style="height:{{ (d.heat_h / maxh * 100) | round(1) }}%"></i></div>
+        <span>{{ d.label }}</span></div>
       {% endfor %}
     </div>
   </div>

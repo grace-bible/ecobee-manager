@@ -1,9 +1,8 @@
-{% extends "base.html" %}
-{% set section = 'setup' %}{% set sub = 'zones' %}
+{% extends "setup_layout.html" %}
 {% block title %}Import rooms{% endblock %}
-{% block content %}
+{% block detail %}
 <div class="pagehead"><div>
-  <div class="crumbs"><a href="/setup">Buildings &amp; rooms</a></div>
+  <div class="crumbs"><a href="/setup">Places</a></div>
   <h1>Import rooms from Google</h1>
   <p class="muted" style="margin:0;max-width:720px">Creates a building for each Google Workspace building and a room (with its calendar) for each room resource in it. Rooms already here are left alone, so you can run this again after adding rooms in Google. You'll still assign rooms to zones afterwards.</p>
 </div></div>

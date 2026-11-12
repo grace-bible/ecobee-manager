@@ -1,0 +1,53 @@
+{% extends "setup_layout.html" %}
+{% block title %}{{ building.name }}{% endblock %}
+{% block detail %}
+<div class="pagehead">
+  <div><div class="crumbs"><a href="/setup">Places</a> / <a href="/setup/campuses/{{ building.campus_id }}">{{ building.campus.name }}</a></div>
+    <h1>{{ building.name }}</h1></div>
+  <a class="button secondary small" href="/buildings/{{ building.id }}">View on Rooms</a>
+</div>
+
+{% if editable %}
+<form class="panel bulk" method="post" action="/buildings/{{ building.id }}">
+  <input type="hidden" name="campus_id" value="{{ building.campus_id }}">
+  <label>Building name <input name="name" required value="{{ building.name }}"></label>
+  <button class="secondary">Rename</button>
+</form>
+{% endif %}
+
+<div class="section-head"><h2>Zones</h2>
+  {% if editable %}<a class="button secondary small" href="/zones/new?campus={{ building.campus_id }}&building={{ building.id }}">+ Zone here</a>{% endif %}</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Zone</th><th>Rooms it serves</th><th class="hide-sm">Thermostats</th></tr></thead>
+  <tbody>
+  {% for z in building.zones %}
+    <tr><td><a href="/zones/{{ z.id }}/edit"><strong>{{ z.name }}</strong></a>{% if not z.enabled %} <span class="badge">paused</span>{% endif %}</td>
+      <td>{% for r in z.rooms %}<a href="/rooms/{{ r.id }}/edit" class="plain">{{ r.name }}</a>{% if not loop.last %}, {% endif %}{% else %}<span class="tag-override">none yet</span>{% endfor %}</td>
+      <td class="hide-sm">{% for t in z.thermostats | sort(attribute='name') %}<span class="dot {{ 'on' if t.connected else 'off' }}"></span>{{ t.name or t.identifier }}{% if not loop.last %}, {% endif %}{% else %}<span class="tag-override">none yet</span>{% endfor %}</td></tr>
+  {% else %}<tr><td colspan="3" class="muted">No zones yet.</td></tr>{% endfor %}
+  </tbody>
+</table></div>
+
+<div class="section-head"><h2>Rooms</h2>
+  {% if editable %}<a class="button secondary small" href="/rooms/new?campus={{ building.campus_id }}&building={{ building.id }}">+ Room here</a>{% endif %}</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Room</th><th>Served by</th><th class="hide-sm">Calendar</th></tr></thead>
+  <tbody>
+  {% for r in building.rooms %}
+    <tr><td><a href="/rooms/{{ r.id }}/edit"><strong>{{ r.name }}</strong></a></td>
+      <td>{% for z in r.zones %}<a href="/zones/{{ z.id }}/edit" class="plain">{{ z.name }}</a>{% if not loop.last %}, {% endif %}{% else %}<span class="tag-override">no zone</span>{% endfor %}</td>
+      <td class="hide-sm">{% if r.calendar_id %}📅 <span class="muted">linked</span>{% else %}<span class="muted">none</span>{% endif %}</td></tr>
+  {% else %}<tr><td colspan="3" class="muted">No rooms yet.</td></tr>{% endfor %}
+  </tbody>
+</table></div>
+
+<p class="muted" style="font-size:13px">The building's weekly schedule and building-wide changes are on its <a href="/buildings/{{ building.id }}">Rooms page</a>.</p>
+
+{% if editable %}
+<h2>Remove building</h2>
+<form class="panel" method="post" action="/buildings/{{ building.id }}/delete" onsubmit="return confirm('Remove {{ building.name }}? Its zones and rooms are kept, without a building.')">
+  <p class="muted">Its zones and rooms are kept, just without a building. Its building-wide schedule and overrides are removed.</p>
+  <button class="danger">Remove building</button>
+</form>
+{% endif %}
+{% endblock %}

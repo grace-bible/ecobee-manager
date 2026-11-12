@@ -7,3 +7,5 @@ secrets/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+# Local preview config (contains a personal email and dev key)
+.claude/launch.json

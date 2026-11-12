@@ -72,7 +72,8 @@ takes a Postgres advisory lock so an accidental second replica is harmless.
 ### 3.2 Holds, never programs
 
 Every change the app makes is a `setHold` with `holdType: dateTime` and an
-explicit end time (default: next reconcile horizon, ≤ 4 h). If the app dies, the
+explicit end time: 5 minutes after the zone's next change (the next hold replaces it at
+the change, so there's no gap between reconciles), ≤ 4 h. If the app dies, the
 hold expires and the thermostat returns to its own program. The on-device
 program at every site should be a flat, safe **unoccupied setback** (configured
 once by hand) — that's the fallback.

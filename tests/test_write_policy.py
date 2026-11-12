@@ -6,10 +6,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import update
 
 from app import poller, reconciler
+from app.config import get_settings
 from app.db import session_scope
 from app.ecobee.backend import BackendError
 from app.main import app
-from app.models import Thermostat, utcnow
+from app.models import Thermostat, aware, utcnow
 from app.services import get_backend
 
 
@@ -82,3 +83,33 @@ def test_zone_status_explains_target_and_override():
         assert s["next"]["intent"] == "unoccupied" and s["until"]
         assert f"/overrides/{o}/cancel" in c.get(f"/zones/{zone}").text  # "Back to schedule"
         assert c.get("/api/v1/zones/99999/status").status_code == 404
+
+
+def test_hold_overlaps_next_change_so_there_is_no_gap(monkeypatch):
+    """The reconciler runs once a minute, so a hold that ends exactly at the change would
+    leave the thermostat on its own program until the next run. Holds end a little after
+    the change (the next hold replaces them), but never beyond the horizon."""
+    with TestClient(app) as c:
+        poller.poll_once()
+        therms = {t["name"]: t for t in c.get("/api/v1/thermostats").json()}
+        lobby = therms["Worship Center North"]  # reassigned from any earlier test zone
+        campus = c.post("/api/v1/campuses", json={"name": "Overlap"}).json()["id"]
+        zone = c.post("/api/v1/zones", json={
+            "name": "Lobby zone", "campus_id": campus,
+            "thermostat_ids": [lobby["id"]]}).json()["id"]
+        c.post("/api/v1/overrides", json={"target": "zone", "target_id": zone, "mode": "off",
+                                          "minutes": 20})
+        t0 = utcnow()
+        monkeypatch.setattr(reconciler, "utcnow", lambda: t0)
+        p = next(p for p in reconciler.plan(t0) if p["thermostat_id"] == lobby["id"])
+        assert p["hold_until"] - p["until"] == reconciler.HOLD_OVERLAP
+        reconciler.reconcile_once()
+        with session_scope() as s:
+            sent = s.get(Thermostat, lobby["id"]).app_hold_until
+        assert aware(sent) == p["hold_until"].replace(second=0, microsecond=0)
+
+        # No change within the horizon: the hold stops at the horizon, no overlap past it.
+        horizon = timedelta(minutes=get_settings().hold_horizon_minutes)
+        later = t0 + timedelta(minutes=30)  # override over; default all day
+        q = next(p for p in reconciler.plan(later) if p["thermostat_id"] == lobby["id"])
+        assert q["hold_until"] <= later + horizon

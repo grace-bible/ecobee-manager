@@ -19,11 +19,14 @@ def test_sync_stores_once_and_pages_use_it():
 
         first = history.sync_once()
         assert first["stored"] > 0 and "error" not in first
-        with session_scope() as s:
-            n = s.scalar(select(func.count()).select_from(RuntimeSample))
         history.sync_once()  # re-reads the last couple of hours; no duplicates
         with session_scope() as s:
-            assert s.scalar(select(func.count()).select_from(RuntimeSample)) == n
+            # (The fake runs up to "now", so a new 5-minute interval may legitimately appear
+            # between the two syncs; compare rows with distinct intervals, not totals.)
+            total = s.scalar(select(func.count()).select_from(RuntimeSample))
+            distinct = s.scalar(select(func.count()).select_from(
+                select(RuntimeSample.thermostat_id, RuntimeSample.at).distinct().subquery()))
+            assert total == distinct
 
         therms = {t["name"]: t for t in c.get("/api/v1/thermostats").json()}
         campus = c.post("/api/v1/campuses", json={"name": "History"}).json()["id"]

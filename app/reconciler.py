@@ -5,8 +5,10 @@ Write policy:
   and a new hold would end later than the one already sent.
   A change made at the wall therefore stands until the next scheduled transition (or
   the hold refresh, ≤ HOLD_HORIZON later) instead of being fought every minute.
-- Every hold ends at the resolver's next change, capped at HOLD_HORIZON, so a dead app
-  leaves thermostats on their own program within hours, never stuck.
+- Every hold ends HOLD_OVERLAP after the resolver's next change, capped at HOLD_HORIZON, so
+  a dead app leaves thermostats on their own program within hours, never stuck. The overlap
+  covers the up-to-a-minute until the next reconcile sends the new target; without it the
+  thermostat would fall back to its own program at every transition.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ from app.services import get_backend
 
 log = logging.getLogger(__name__)
 REFRESH_BEFORE = timedelta(minutes=15)
+HOLD_OVERLAP = timedelta(minutes=5)
 LOCK_ID = 0xEC0BEE  # Postgres advisory lock; a second replica just skips
 
 
@@ -95,6 +98,7 @@ def plan(now: datetime | None = None) -> list[dict]:
                 ovs = zone_ovs + therm_ovs.get(t.id, [])
                 d: Desired = resolve(cfg, now, ovs, events, blocks, st.min_deadband_f)
                 until = next_change(cfg, now, ovs, events, blocks, horizon=horizon)
+                hold_until = min(until + HOLD_OVERLAP, now + horizon)
                 sent_until = aware(t.app_hold_until)
                 needs = (
                     (t.app_hold_heat, t.app_hold_cool) != d.key
@@ -103,7 +107,7 @@ def plan(now: datetime | None = None) -> list[dict]:
                     # it. A hold that already ends at the next change is left alone, or
                     # the last REFRESH_BEFORE before every transition re-sends each minute.
                     or (sent_until - now < REFRESH_BEFORE
-                        and until.replace(second=0, microsecond=0) > sent_until)
+                        and hold_until.replace(second=0, microsecond=0) > sent_until)
                     # Only "sent" in dry run → really send once dry run is turned off.
                     or (not st.dry_run and (t.app_hold_source or "").startswith("dry:"))
                 )
@@ -111,7 +115,8 @@ def plan(now: datetime | None = None) -> list[dict]:
                     "thermostat_id": t.id, "identifier": t.identifier, "name": t.name,
                     "zone": z.name, "connected": t.connected, "tz": cfg.timezone,
                     "heat": d.heat, "cool": d.cool, "source": d.source, "ref": d.ref,
-                    "intent": d.intent, "notes": d.notes, "until": until, "needs_write": needs,
+                    "intent": d.intent, "notes": d.notes, "until": until, "hold_until": hold_until,
+                    "needs_write": needs,
                 })
     return out
 
@@ -140,7 +145,7 @@ def _reconcile() -> dict:
     # Same target + same end + same timezone → one API call for all of them.
     batches: dict[tuple, list[dict]] = defaultdict(list)
     for p in items:
-        until = p["until"].replace(second=0, microsecond=0)
+        until = p["hold_until"].replace(second=0, microsecond=0)
         batches[(p["heat"], p["cool"], until, p["tz"])].append(p)
 
     sent, failed = 0, 0

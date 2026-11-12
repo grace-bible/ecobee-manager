@@ -167,6 +167,12 @@ td.right, th.right { text-align: right; }
        background: var(--surface-2); border: 1px solid var(--line); }
 .msg { padding: 10px 14px; border-radius: var(--radius-sm); background: var(--ok-soft); color: var(--ok); margin-bottom: 16px; font-weight: 550; }
 .msg.warn { background: var(--warn-soft); color: var(--warn); }
+.msg.error, .form-error { background: var(--bad-soft); color: var(--bad); }
+.form-error { flex-basis: 100%; width: 100%; margin: 12px 0 0; padding: 10px 14px;
+              border-radius: var(--radius-sm); font-weight: 550; border-left: 3px solid var(--bad); }
+[aria-invalid=true] { border-color: var(--bad); outline: 2px solid color-mix(in srgb, var(--bad) 35%, transparent); }
+.error-page { max-width: 560px; margin: 12vh auto 0; padding: 0 16px; }
+.error-page h1 { margin-bottom: 12px; }
 
 /* ---------- forms ---------- */
 label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); font-weight: 550; }

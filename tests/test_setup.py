@@ -60,3 +60,37 @@ def test_setup_pages_show_the_tree_and_details():
                    follow_redirects=False)
         assert r.status_code == 303
         assert "Tree campus 2" in c.get("/setup").text
+
+
+def test_duplicate_names_are_friendly_409s_not_crashes():
+    with TestClient(app) as c:
+        cid = c.post("/api/v1/campuses", json={"name": "Dupes"}).json()["id"]
+        assert c.post("/api/v1/campuses", json={"name": "Dupes"}).status_code == 409
+        c.post("/api/v1/buildings", json={"name": "Main", "campus_id": cid})
+        r = c.post("/api/v1/buildings", json={"name": "Main", "campus_id": cid})
+        assert r.status_code == 409 and "name 'Main' on this campus" in r.json()["detail"]
+        c.post("/api/v1/rooms", json={"name": "Chapel", "campus_id": cid})
+        assert c.post("/api/v1/rooms", json={"name": "Chapel", "campus_id": cid}
+                      ).status_code == 409
+        c.post("/api/v1/zones", json={"name": "Z", "campus_id": cid})
+        assert c.post("/api/v1/zones", json={"name": "Z", "campus_id": cid}).status_code == 409
+        c.post("/api/v1/groups", json={"name": "Dupes group"})
+        assert c.post("/api/v1/groups", json={"name": "Dupes group"}).status_code == 409
+
+
+def test_failed_form_post_explains_itself():
+    with TestClient(app) as c:
+        a = c.post("/api/v1/campuses", json={"name": "Form A"}).json()["id"]
+        c.post("/api/v1/campuses", json={"name": "Form B"})
+        # The page's script asks for JSON: a plain message it can show on the form.
+        r = c.post(f"/campuses/{a}", data={"name": "Form B", "timezone": "America/Chicago"},
+                   headers={"accept": "application/json"})
+        assert r.status_code == 409
+        assert r.json()["detail"] == "another campus already has the name 'Form B'"
+        # Without the script (plain browser post): a readable page, not a bare status code.
+        r = c.post(f"/campuses/{a}", data={"name": "Form B", "timezone": "America/Chicago"},
+                   headers={"accept": "text/html"})
+        assert "That didn't work" in r.text and "msg error" in r.text and ">409<" not in r.text
+        r = c.post(f"/campuses/{a}", data={"name": "Form A", "timezone": "Nowhere/Land"},
+                   headers={"accept": "application/json"})
+        assert r.status_code == 422 and "timezone" in r.json()["detail"]

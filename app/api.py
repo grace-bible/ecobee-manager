@@ -487,11 +487,27 @@ def list_audit(limit: int = 100, db: Session = Depends(get_db), _=Depends(curren
 
 @router.post("/campuses", status_code=201)
 def create_campus(body: CampusIn, db: Session = Depends(get_db), p=Depends(require_admin)):
+    _name_free(db, Campus, body.name, what="campus")
     c = Campus(name=body.name, timezone=body.timezone)
     db.add(c)
     db.flush()
     audit(db, p, "create_campus", c.name)
     return {"id": c.id}
+
+
+def _name_free(db: Session, model, name: str, exclude_id: int | None = None,
+               campus_id: int | None = None, what: str = "") -> None:
+    """Friendly 409 instead of a unique-constraint crash when a name is already used."""
+    q = select(model).where(model.name == name)
+    if campus_id is not None:
+        q = q.where(model.campus_id == campus_id)
+    if exclude_id is not None:
+        q = q.where(model.id != exclude_id)
+    with db.no_autoflush:  # don't flush (and so find) a new, still-pending row itself
+        taken = db.scalar(q)
+    if taken:
+        where = " on this campus" if campus_id is not None else ""
+        raise HTTPException(409, f"another {what} already has the name {name!r}{where}")
 
 
 def _campus_or_404(db: Session, campus_id: int) -> Campus:
@@ -507,7 +523,7 @@ def update_campus(campus_id: int, body: CampusIn, db: Session = Depends(get_db),
     c = _campus_or_404(db, campus_id)
     clash = db.scalar(select(Campus).where(Campus.name == body.name, Campus.id != c.id))
     if clash:
-        raise HTTPException(409, f"there's already a campus called {body.name!r}")
+        raise HTTPException(409, f"another campus already has the name {body.name!r}")
     c.name, c.timezone = body.name, body.timezone
     audit(db, p, "update_campus", c.name, body.model_dump())
     return {"id": c.id, "name": c.name, "timezone": c.timezone}
@@ -575,6 +591,7 @@ def _apply_zone(db: Session, z: Zone, body: ZoneIn):
 
 @router.post("/zones", status_code=201)
 def create_zone(body: ZoneIn, db: Session = Depends(get_db), p=Depends(require_write)):
+    _name_free(db, Zone, body.name, campus_id=body.campus_id, what="zone")
     _check_campus(p, body.campus_id)
     z = Zone(name=body.name, campus_id=body.campus_id)
     db.add(z)
@@ -590,6 +607,7 @@ def update_zone(zone_id: int, body: ZoneIn, db: Session = Depends(get_db),
     z = _zone_or_404(db, zone_id)
     _check_campus(p, z.campus_id)
     _check_campus(p, body.campus_id)
+    _name_free(db, Zone, body.name, z.id, body.campus_id, "zone")
     _apply_zone(db, z, body)
     audit(db, p, "update_zone", z.name, body.model_dump())
     return zone_dict(z)
@@ -634,6 +652,7 @@ def _room_or_404(db: Session, room_id: int) -> Room:
 
 @router.post("/buildings", status_code=201)
 def create_building(body: BuildingIn, db: Session = Depends(get_db), p=Depends(require_write)):
+    _name_free(db, Building, body.name, campus_id=body.campus_id, what="building")
     _check_campus(p, body.campus_id)
     if not db.get(Campus, body.campus_id):
         raise HTTPException(400, "campus not found")
@@ -651,6 +670,7 @@ def update_building(building_id: int, body: BuildingIn, db: Session = Depends(ge
     _check_campus(p, b.campus_id)
     if body.campus_id != b.campus_id:
         raise HTTPException(400, "a building can't move to another campus")
+    _name_free(db, Building, body.name, b.id, b.campus_id, "building")
     b.name = body.name
     audit(db, p, "update_building", b.name)
     return building_dict(b)
@@ -671,6 +691,7 @@ def delete_building(building_id: int, db: Session = Depends(get_db), p=Depends(r
 
 
 def _apply_room(db: Session, p: Principal, r: Room, body: RoomIn):
+    _name_free(db, Room, body.name, r.id, body.campus_id, "room")
     if body.building_id is not None:
         _same_campus(db.get(Building, body.building_id), body.campus_id, "building")
     if body.calendar_id:
@@ -798,6 +819,7 @@ def _set_group_zones(db: Session, p: Principal, g: ZoneGroup, zone_ids: list[int
 
 @router.post("/groups", status_code=201)
 def create_group(body: GroupIn, db: Session = Depends(get_db), p=Depends(require_write)):
+    _name_free(db, ZoneGroup, body.name, what="group")
     g = ZoneGroup(name=body.name, description=body.description)
     _set_group_zones(db, p, g, body.zone_ids)
     db.add(g)
@@ -810,6 +832,7 @@ def create_group(body: GroupIn, db: Session = Depends(get_db), p=Depends(require
 def update_group(group_id: int, body: GroupIn, db: Session = Depends(get_db),
                  p=Depends(require_write)):
     g = _group_or_404(db, group_id)
+    _name_free(db, ZoneGroup, body.name, g.id, what="group")
     g.name, g.description = body.name, body.description
     _set_group_zones(db, p, g, body.zone_ids)
     audit(db, p, "update_group", g.name, body.model_dump())

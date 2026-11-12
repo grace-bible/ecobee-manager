@@ -41,5 +41,45 @@
     {% endif %}
     {% block content %}{% endblock %}
   </main>
+<script>
+// Forms post in the background so a mistake (a taken name, a bad value) shows up right on
+// the form with what you typed still there, instead of on a separate error page.
+document.addEventListener('submit', async e => {
+  const f = e.target;
+  if (e.defaultPrevented || f.method.toLowerCase() !== 'post' || f.hasAttribute('data-native')) return;
+  e.preventDefault();
+  const btn = e.submitter, action = (btn && btn.getAttribute('formaction')) || f.action;
+  f.querySelectorAll('.form-error').forEach(x => x.remove());
+  f.querySelectorAll('[aria-invalid]').forEach(x => x.removeAttribute('aria-invalid'));
+  if (btn) btn.disabled = true;
+  let msg;
+  try {
+    const r = await fetch(action, {method: 'POST', body: new FormData(f, btn),
+                                   headers: {Accept: 'application/json'}});
+    if (r.ok) {
+      if (r.redirected) { location.assign(r.url); return; }
+      document.open(); document.write(await r.text()); document.close(); return;
+    }
+    const data = await r.json().catch(() => ({}));
+    const d = data.detail;
+    msg = Array.isArray(d) ? d.map(x => (x.msg || '').replace(/^Value error, /, '')).join('; ')
+        : (d || `Something went wrong (${r.status}).`);
+    if (r.status === 401 || r.status === 403) msg = d || "You don't have access to change this.";
+  } catch {
+    msg = "Couldn't reach the server. Check your connection and try again.";
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+  msg = msg.charAt(0).toUpperCase() + msg.slice(1);
+  const box = document.createElement('div');
+  box.className = 'form-error'; box.setAttribute('role', 'alert'); box.textContent = msg;
+  f.append(box);
+  // Point at the field the message is about, when it names one ("name", "timezone", …).
+  const field = [...f.querySelectorAll('input:not([type=hidden]), select')]
+    .find(i => i.name && !i.disabled && new RegExp(`\\b${i.name.replace('_id', '')}\\b`, 'i').test(msg));
+  if (field) { field.setAttribute('aria-invalid', 'true'); field.focus(); }
+  box.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+});
+</script>
 </body>
 </html>

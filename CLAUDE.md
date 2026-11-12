@@ -10,7 +10,7 @@ Full design: `docs/SPEC.md` — read it before changing behavior.
 
 ```bash
 python -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
-pytest -q                      # 33 tests, ~1 s
+pytest -q                      # 44 tests, ~4 s
 ruff check app tests           # must stay clean
 # Local run with 6 simulated thermostats (nothing real touched):
 ECOBEE_BACKEND=fake DEV_AUTH_EMAIL=you@example.org \
@@ -28,6 +28,8 @@ ECOBEE_BACKEND=fake DEV_AUTH_EMAIL=you@example.org \
 | `app/ecobee/backend.py` | `ThermostatBackend` protocol + `EcobeeCloudBackend`. The only code that talks to ecobee. |
 | `app/ecobee/fake.py`, `dryrun.py` | Simulated backend for dev/tests; wrapper that logs writes instead of sending. |
 | `app/poller.py` | ecobee → `thermostat` table (summary every minute, full fetch on revision change). |
+| `app/history.py` | ecobee runtime report → `runtime_sample` (5-min history), every 15 min; backfill + prune. |
+| `app/insights.py`, `app/charts.py` | **Pure**: warm-up times, daily runtime, occupancy over history; server-rendered SVG room chart. |
 | `app/gcal.py` | Workspace resource list + incremental event sync (service account, domain-wide delegation). |
 | `app/auth.py` | Cloudflare Access JWT verification, roles, API keys, dev bypass. |
 | `app/api.py` | REST `/api/v1`. The UI reuses these functions — put logic here, not in `web.py`. |
@@ -47,7 +49,9 @@ ECOBEE_BACKEND=fake DEV_AUTH_EMAIL=you@example.org \
 - **Only `app/ecobee/backend.py` may import `pyecobee`.** The login is unofficial (ecobee's
   web OAuth client, same as Home Assistant 2026.3+). `python-ecobee-api` is pinned to 0.4.4;
   we also call its private `_request_with_refresh`. Re-check both on any version bump.
-- ecobee API: temperatures are integer **tenths of °F**; max **25 thermostats per
+- ecobee API: temperatures are integer **tenths of °F** (but the runtime report gives °F
+  decimals, in the thermostat's local time); `zoneOccupancy` is 0 forever on units with no
+  sensor, so only trust it once it has been 1; max **25 thermostats per
   selection** (batch with `_chunks`); don't full-fetch a thermostat more than every 3 min.
 - `DRY_RUN=true` is the default. In dry run, `app_hold_source` is prefixed `dry:` so the
   reconciler re-sends for real once dry run is turned off — keep that behavior.

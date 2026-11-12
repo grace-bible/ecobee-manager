@@ -93,6 +93,7 @@ once by hand) — that's the fallback.
 | `audit_log` | who, when, what, source (`ui`/`api`/`calendar`/`schedule`), before/after |
 | `app_user` | email (from Cloudflare Access), role: `admin` / `campus_manager` (scoped to campus ids) / `viewer` |
 | `api_key` | hashed key, name, role + campus ids (same roles as `app_user`; viewer by default) — for n8n/automation |
+| `runtime_sample` | thermostat, 5-min interval (UTC), indoor/outdoor temp, humidity, setpoints, heating/cooling/fan seconds, occupancy — from ecobee's runtime report, kept 400 days |
 | `ecobee_credentials` | encrypted refresh/access token, last login |
 
 ## 5. Scheduling: how a zone's target is decided
@@ -158,9 +159,21 @@ Calendar keyword tags (in event title or description, case-insensitive):
 
 Direct Google Chat webhook (no n8n dependency) for: thermostat offline > 15 min,
 zone not reaching setpoint 60 min into an occupied period (more than 3 °F outside the
-band), ecobee auth failing, calendar sync failing > 15 min. Debounced: each incident is
+band), ecobee auth failing, calendar sync failing > 15 min, and any alert the ecobee itself
+raises (equipment faults, temperature alerts). Debounced: each incident is
 an `alert` row, with one message when it opens and one when it resolves. Open alerts also
 show as a banner in the UI and on Settings. Implemented in `app/alerts.py`.
+
+## 9a. History and insights
+
+`app/history.py` pulls ecobee's runtime report (5-minute intervals; ecobee uploads about
+every 15 min) into `runtime_sample`: 31 days of backfill on first sight of a thermostat,
+then a re-read of the last 2 h every 15 min. Each room page shows a 24 h / 7 day chart
+(indoor, target band, outdoor, heating/cooling strip) plus, for the last week: typical and
+slowest time to reach a new target (compared with the room's booking lead time), daily
+heating/cooling hours, and hours conditioned with nobody detected (rooms with an occupancy
+sensor only). `/insights` compares rooms. API: `GET /api/v1/zones/{id}/history`,
+`/insights`.
 
 ## 10. Future
 

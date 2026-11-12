@@ -60,3 +60,10 @@ def test_check_once_opens_once_and_resolves(monkeypatch):
     assert alerts.check_once(NOW + 2 * M)["resolved"] == 1
     assert sent[-1].startswith("✅") and len(sent) == 2
     assert alerts.open_alerts() == []
+
+
+def test_ecobee_device_alerts_become_incidents():
+    a = {"ref": "abc-1", "text": "Heating is not working", "severity": "high", "type": "alert"}
+    got = find_incidents(NOW, [therm(ecobee_alerts=(a,))], None, [])
+    assert got["ecobee:1:abc-1"] == ("ecobee", "Office: Heating is not working")
+    assert find_incidents(NOW, [therm(ecobee_alerts=())], None, []) == {}

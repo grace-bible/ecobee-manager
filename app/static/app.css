@@ -233,3 +233,46 @@ dialog::backdrop { background: rgb(15 15 14 / .45); }
   .hide-sm { display: none; }
   h1 { font-size: 23px; }
 }
+
+/* ---------- history chart + stats ---------- */
+.chartcard { padding: 14px 14px 10px; gap: 8px; }
+.chartwrap { position: relative; }
+.chart { width: 100%; height: auto; display: block; touch-action: pan-y; }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart .grid.v { stroke-dasharray: 2 4; }
+.chart .ylab { fill: var(--muted); font-size: 11px; text-anchor: end; }
+.chart .xlab { fill: var(--muted); font-size: 11px; text-anchor: middle; }
+.chart .band { fill: color-mix(in srgb, var(--ok) 10%, transparent); }
+.chart .sp { fill: none; stroke-width: 1.2; opacity: .7; }
+.chart .sp.heat { stroke: var(--heat); } .chart .sp.cool { stroke: var(--cool); }
+.chart .indoor { fill: none; stroke: var(--ink); stroke-width: 2.2; stroke-linejoin: round; }
+.chart .outdoor { fill: none; stroke: var(--muted); stroke-width: 1.4; stroke-dasharray: 4 4; }
+.chart .strip-bg { fill: var(--surface-2); }
+.chart .run-heat { fill: var(--heat); } .chart .run-cool { fill: var(--cool); }
+.chart .cursor { stroke: var(--accent); stroke-width: 1; }
+.readout { position: absolute; top: 4px; right: 8px; font-size: 12.5px; background: var(--surface);
+           border: 1px solid var(--line); border-radius: 8px; padding: 4px 9px; box-shadow: var(--shadow);
+           font-variant-numeric: tabular-nums; pointer-events: none; }
+.chart-empty { padding: 40px 0; text-align: center; color: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--ink-2); align-items: center; }
+.legend .push { margin-left: auto; }
+.sw { display: inline-block; width: 14px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.sw.indoor { background: var(--ink); height: 3px; vertical-align: 3px; }
+.sw.band { background: color-mix(in srgb, var(--ok) 25%, transparent); }
+.sw.outdoor { border-top: 2px dashed var(--muted); height: 0; vertical-align: 3px; }
+.sw.run-heat { background: var(--heat); } .sw.run-cool { background: var(--cool); }
+
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-top: 14px; }
+.stat { gap: 6px; }
+.stat .label { font-size: 13px; font-weight: 650; color: var(--ink-2); }
+.stat .big { font-size: 28px; font-weight: 600; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.stat .big .heat + .cool { margin-left: 8px; }
+.stat .muted { font-size: 13.5px; }
+.hint { font-size: 13px; padding: 6px 10px; border-radius: 8px; background: var(--ok-soft); color: var(--ok); }
+.hint.warn { background: var(--warn-soft); color: var(--warn); }
+.minibars { display: flex; gap: 6px; align-items: end; height: 70px; margin-top: 4px; }
+.minibars .day { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; }
+.minibars .bars { flex: 1; width: 100%; display: flex; gap: 2px; align-items: end; justify-content: center; }
+.minibars i { display: block; width: 40%; max-width: 12px; border-radius: 3px 3px 0 0; min-height: 1px; }
+.minibars i.h { background: var(--heat); } .minibars i.c { background: var(--cool); }
+.minibars span { font-size: 11px; color: var(--muted); }

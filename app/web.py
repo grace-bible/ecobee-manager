@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app import alerts, api, gcal, reconciler
 from app.auth import Principal, current_principal, require_admin, require_write
+from app.charts import room_chart
 from app.config import get_settings
 from app.db import get_db
 from app.ecobee.backend import AuthRequired, BackendError
@@ -109,6 +110,22 @@ def rooms(request: Request, campus: int | None = None, db: Session = Depends(get
                   groups=groups, campus=campus, unassigned=unassigned)
 
 
+@router.get("/insights", response_class=HTMLResponse)
+def insights_page(request: Request, days: int = 7, db: Session = Depends(get_db),
+                  p: Principal = Depends(current_principal)):
+    """Every room over the last week: heating/cooling hours, warm-up times, empty rooms."""
+    days = 30 if days >= 30 else 7
+    campuses = db.scalars(select(Campus).order_by(Campus.name).options(
+        selectinload(Campus.zones).selectinload(Zone.thermostats))).all()
+    now = utcnow()
+    rows = {z.id: api.room_insights(z, now, days) for c in campuses for z in c.zones
+            if z.enabled}
+    alerts_by_room = {z.id: [(t.name, a) for t in z.thermostats for a in (t.ecobee_alerts or [])]
+                      for c in campuses for z in c.zones}
+    return render(request, "insights.html", p, campuses=campuses, rows=rows, days=days,
+                  alerts_by_room=alerts_by_room)
+
+
 @router.get("/setup", response_class=HTMLResponse)
 def setup_page(request: Request, db: Session = Depends(get_db),
                p: Principal = Depends(current_principal)):
@@ -139,7 +156,13 @@ def room_page(request: Request, zone_id: int, db: Session = Depends(get_db),
             CalendarEvent.ends_at > now).order_by(CalendarEvent.starts_at).limit(8)).all()
     blocks = db.scalars(select(ScheduleBlock).where(ScheduleBlock.zone_id == zone.id)
                         .order_by(ScheduleBlock.start)).all()
+    hours = 24 * 7 if request.query_params.get("range") == "7d" else 24
+    tz = zone.campus.timezone if zone.campus else get_settings().default_timezone
+    start = now - timedelta(hours=hours)
+    chart = room_chart(api.room_points(zone, start), start, now, tz)
     return render(request, "room.html", p, zone=zone, s=api.zone_status(db, zone, now),
+                  chart=chart, range="7d" if hours > 24 else "24h",
+                  insights=api.room_insights(zone, now),
                   preview=_preview(db, zone, now, hours=36), events=events,
                   blocks=[api.block_dict(b) for b in blocks],
                   thermostats=sorted(zone.thermostats, key=lambda t: t.name),
@@ -429,7 +452,7 @@ def ecobee_login(mfa_code: str = Form(""), p: Principal = Depends(require_admin)
 
 @router.post("/settings/run/{job}")
 def run_job(request: Request, job: str, p: Principal = Depends(require_admin)):
-    if job not in ("poll", "calendar", "reconcile", "alerts"):
+    if job not in ("poll", "calendar", "reconcile", "alerts", "history"):
         raise HTTPException(404)
     result = api.run_job(job, p)
     return RedirectResponse(f"/settings?msg={job}: {result}", status_code=303)

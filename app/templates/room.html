@@ -29,6 +29,67 @@
   </div>
 </section>
 
+{% set room_alerts = thermostats | map(attribute='ecobee_alerts') | select | sum(start=[]) %}
+{% if room_alerts %}
+<div class="msg warn" style="margin-top:16px"><strong>ecobee says:</strong>
+  {% for a in room_alerts %}{{ a.text }}{% if not loop.last %} · {% endif %}{% endfor %}</div>
+{% endif %}
+
+<div class="section-head">
+  <h2>History</h2>
+  <nav class="pills" aria-label="Range">
+    <a href="?range=24h" {% if range == '24h' %}aria-current="true"{% endif %}>24 hours</a>
+    <a href="?range=7d" {% if range == '7d' %}aria-current="true"{% endif %}>7 days</a>
+  </nav>
+</div>
+<div class="card chartcard">
+  {{ chart }}
+  <div class="legend">
+    <span><i class="sw indoor"></i>Inside</span>
+    <span><i class="sw band"></i>Target</span>
+    <span><i class="sw outdoor"></i>Outside</span>
+    <span><i class="sw run-heat"></i>Heating</span>
+    <span><i class="sw run-cool"></i>Cooling</span>
+    {% if insights.last_sample %}<span class="muted push">ecobee data through {{ insights.last_sample | when(tz) }}</span>{% endif %}
+  </div>
+</div>
+
+{% set ws = insights.warmup_summary %}
+{% set occ = insights.occupancy %}
+<div class="stats">
+  <div class="card stat">
+    <div class="label">Getting to temperature <span class="muted">· last 7 days</span></div>
+    {% if ws.reached %}
+      <div class="big">{{ ws.median }} min</div>
+      <div class="muted">typical; slowest {{ ws.slowest }} min{% if ws.missed %}; {{ ws.missed }} time{{ 's' if ws.missed != 1 }} it didn't get there within 3 h{% endif %}.</div>
+      {% if zone.calendar_id %}<div class="hint {{ 'warn' if ws.slowest > insights.lead_minutes else '' }}">
+        Bookings start {{ insights.lead_minutes }} min early{% if ws.slowest > insights.lead_minutes %}, which wasn't always enough{% else %}, which has been enough{% endif %}.</div>{% endif %}
+    {% elif ws.count %}<div class="big">—</div><div class="muted">{{ ws.count }} change{{ 's' if ws.count != 1 }}, but it never reached the target within 3 h.</div>
+    {% else %}<div class="big">—</div><div class="muted">No warm-ups or cool-downs recorded yet.</div>{% endif %}
+  </div>
+  <div class="card stat">
+    <div class="label">Equipment running <span class="muted">· last 7 days</span></div>
+    <div class="big"><span class="heat">{{ insights.runtime_total.heat_h }} h</span> <span class="cool">{{ insights.runtime_total.cool_h }} h</span></div>
+    {% set maxh = (insights.runtime | map(attribute='heat_h') | list + insights.runtime | map(attribute='cool_h') | list + [0.1]) | max %}
+    <div class="minibars" aria-label="Heating and cooling hours per day">
+      {% for d in insights.runtime[-7:] %}
+      <div class="day" title="{{ d.day.strftime('%a %b %-d') }}: heating {{ d.heat_h }} h, cooling {{ d.cool_h }} h">
+        <div class="bars"><i class="h" style="height:{{ (d.heat_h / maxh * 100) | round }}%"></i><i class="c" style="height:{{ (d.cool_h / maxh * 100) | round }}%"></i></div>
+        <span>{{ d.day.strftime('%a')[:2] }}</span></div>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="card stat">
+    <div class="label">Occupancy <span class="muted">· last 7 days</span></div>
+    {% if occ.has_data %}
+      <div class="big">{{ occ.conditioned_empty_h }} h</div>
+      <div class="muted">heated or cooled with nobody detected{% if occ.occupied_setback_h %}; {{ occ.occupied_setback_h }} h with people in it at setback{% endif %}.</div>
+    {% else %}
+      <div class="big">—</div><div class="muted">These thermostats don't report occupancy. An ecobee with a built-in or room sensor would show when the room is actually in use.</div>
+    {% endif %}
+  </div>
+</div>
+
 <h2>Coming up</h2>
 <ol class="agenda">
   {% for p in preview %}
@@ -86,4 +147,20 @@
 </div>
 
 {{ ui.adjust_dialog() }}
+<script>
+(() => {
+  const wrap = document.querySelector('.chartwrap'); if (!wrap) return;
+  const pts = JSON.parse(wrap.dataset.points), svg = wrap.querySelector('svg');
+  const cur = svg.querySelector('.cursor'), out = wrap.querySelector('.readout');
+  const f = v => v == null ? '—' : `${(+v).toFixed(1).replace(/\.0$/, '')}°`;
+  svg.addEventListener('pointermove', e => {
+    const r = svg.getBoundingClientRect(), x = (e.clientX - r.left) / r.width * +wrap.dataset.w;
+    let best = pts[0]; for (const p of pts) if (Math.abs(p[0] - x) < Math.abs(best[0] - x)) best = p;
+    cur.setAttribute('x1', best[0]); cur.setAttribute('x2', best[0]); cur.setAttribute('visibility', 'visible');
+    out.hidden = false;
+    out.innerHTML = `<strong>${best[1]}</strong> · inside ${f(best[2])} · target <span class="heat">${f(best[3])}</span>–<span class="cool">${f(best[4])}</span> · outside ${f(best[5])}${best[6] ? ' · ' + best[6] : ''}`;
+  });
+  svg.addEventListener('pointerleave', () => { cur.setAttribute('visibility', 'hidden'); out.hidden = true; });
+})();
+</script>
 {% endblock %}

@@ -14,8 +14,8 @@ import json
 import logging
 import threading
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -47,7 +47,7 @@ class SummaryRow:
     identifier: str
     name: str
     connected: bool
-    revision: str  # thermostat + runtime revisions; change ⇒ worth a full fetch
+    revision: str  # thermostat + alerts + runtime revisions; change ⇒ worth a full fetch
     equipment: str
 
 
@@ -65,6 +65,25 @@ class ThermostatState:
     equipment_running: str
     active_hold: dict | None
     timezone: str | None
+    # Active ecobee alerts on the device: [{"ref", "text", "severity", "type"}]
+    alerts: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class RuntimeRow:
+    """One 5-minute interval from ecobee's runtime report (history)."""
+
+    identifier: str
+    at: datetime  # UTC start of the interval
+    temp: float | None
+    humidity: int | None
+    heat_sp: float | None
+    cool_sp: float | None
+    outdoor: float | None
+    heat_s: int  # seconds of heating in the interval (0–300)
+    cool_s: int
+    fan_s: int
+    occupied: bool | None  # thermostat's own occupancy sensor, if it has one
 
 
 class ThermostatBackend(Protocol):
@@ -73,11 +92,37 @@ class ThermostatBackend(Protocol):
     def set_hold(self, identifiers: list[str], heat: float, cool: float,
                  until: datetime, tz: str) -> None: ...
     def resume(self, identifiers: list[str]) -> None: ...
+    def runtime_report(self, identifiers: list[str], start: date, end: date,
+                       timezones: dict[str, str]) -> list[RuntimeRow]: ...
 
 
 def _chunks(items: list[str], n: int = BATCH) -> Iterable[list[str]]:
     for i in range(0, len(items), n):
         yield items[i:i + n]
+
+
+_RUNTIME_COLUMNS = ("zoneAveTemp,zoneHumidity,zoneHeatTemp,zoneCoolTemp,outdoorTemp,"
+                    "compHeat1,compHeat2,auxHeat1,auxHeat2,compCool1,compCool2,fan,zoneOccupancy")
+
+
+def _runtime_row(ident: str, line: str, tz: ZoneInfo) -> RuntimeRow | None:
+    """'2026-11-12,15:05:00,74.4,36,45,90.7,78,0,0,0,0,0,0,0,1' → RuntimeRow (None if empty)."""
+    p = line.split(",")
+    if len(p) < 15 or p[2] == "":
+        return None
+
+    def num(v):
+        return float(v) if v not in ("", None) else None
+
+    def secs(*vs):
+        return int(max((float(v) for v in vs if v not in ("", None)), default=0))
+
+    at = datetime.fromisoformat(f"{p[0]}T{p[1]}").replace(tzinfo=tz).astimezone(ZoneInfo("UTC"))
+    hum = num(p[3])
+    return RuntimeRow(ident, at, num(p[2]), int(hum) if hum is not None else None,
+                      num(p[4]), num(p[5]), num(p[6]),
+                      heat_s=secs(p[7], p[8], p[9], p[10]), cool_s=secs(p[11], p[12]),
+                      fan_s=secs(p[13]), occupied=None if p[14] == "" else p[14] == "1")
 
 
 def _f(tenths) -> float | None:
@@ -196,7 +241,7 @@ class EcobeeCloudBackend:
             p = row.split(":")
             rows.append(SummaryRow(
                 identifier=p[0], name=p[1], connected=p[2] == "true",
-                revision=f"{p[3]}:{p[5]}", equipment=status.get(p[0], ""),
+                revision=f"{p[3]}:{p[4]}:{p[5]}", equipment=status.get(p[0], ""),
             ))
         return rows
 
@@ -207,6 +252,7 @@ class EcobeeCloudBackend:
                 "selectionType": "thermostats", "selectionMatch": ",".join(chunk),
                 "includeRuntime": True, "includeSettings": True, "includeEvents": True,
                 "includeEquipmentStatus": True, "includeLocation": True,
+                "includeAlerts": True,
             }}
             resp = self._call("GET", "thermostat", "get thermostats",
                               params={"json": json.dumps(sel)})
@@ -226,7 +272,33 @@ class EcobeeCloudBackend:
                     equipment_running=t.get("equipmentStatus", ""),
                     active_hold=hold,
                     timezone=t.get("location", {}).get("timeZone"),
+                    alerts=[{"ref": a.get("acknowledgeRef"), "text": a.get("text", ""),
+                             "severity": a.get("severity"), "type": a.get("alertType")}
+                            for a in t.get("alerts", [])],
                 ))
+        return out
+
+    def runtime_report(self, identifiers: list[str], start: date, end: date,
+                       timezones: dict[str, str]) -> list[RuntimeRow]:
+        """5-minute history. ecobee returns rows in each thermostat's local time; we
+        convert to UTC with `timezones`. At most 31 days and 25 thermostats per request."""
+        out: list[RuntimeRow] = []
+        day = start
+        while day <= end:
+            last = min(end, day + timedelta(days=30))
+            for chunk in _chunks(identifiers):
+                req = {"startDate": day.isoformat(), "endDate": last.isoformat(),
+                       "columns": _RUNTIME_COLUMNS,
+                       "selection": {"selectionType": "thermostats",
+                                     "selectionMatch": ",".join(chunk)}}
+                resp = self._call("GET", "runtimeReport", "runtime report",
+                                  params={"format": "json", "body": json.dumps(req)})
+                for rep in resp.get("reportList", []):
+                    ident = rep["thermostatIdentifier"]
+                    tz = ZoneInfo(timezones.get(ident) or "UTC")
+                    out.extend(r for r in (_runtime_row(ident, line, tz)
+                                           for line in rep.get("rowList", [])) if r)
+            day = last + timedelta(days=1)
         return out
 
     # ---------- writes ----------

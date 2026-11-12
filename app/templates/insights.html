@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% set section = 'insights' %}
+{% block title %}Insights{% endblock %}
+{% block content %}
+<div class="pagehead">
+  <div><h1>Insights</h1>
+    <p class="muted" style="margin:0">From ecobee's 5-minute history. Which rooms run the most, which are slow to warm up or cool down, and which are heated or cooled with nobody there.</p></div>
+  <nav class="pills" aria-label="Period">
+    <a href="?days=7" {% if days == 7 %}aria-current="true"{% endif %}>7 days</a>
+    <a href="?days=30" {% if days == 30 %}aria-current="true"{% endif %}>30 days</a>
+  </nav>
+</div>
+
+{% set any = namespace(v=false) %}
+{% for c in campuses %}
+  {% set zones = c.zones | selectattr('enabled') | sort(attribute='name') | list %}
+  {% if zones %}{% set any.v = true %}
+  <div class="section-head"><h2>{{ c.name }}</h2></div>
+  <div class="tablewrap"><table>
+    <thead><tr>
+      <th>Room</th>
+      <th class="right">Heating</th><th class="right">Cooling</th>
+      <th class="right">Typical warm-up</th><th class="right hide-sm">Slowest</th>
+      <th class="right hide-sm">Empty but conditioned</th><th class="hide-sm">ecobee alerts</th>
+    </tr></thead>
+    <tbody>
+    {% for z in zones %}{% set r = rows[z.id] %}{% set w = r.warmup_summary %}
+      <tr>
+        <td><a href="/zones/{{ z.id }}"><strong>{{ z.name }}</strong></a>
+          {% if not r.samples %}<div class="muted" style="font-size:13px">No history yet</div>{% endif %}</td>
+        <td class="right num heat">{{ r.runtime_total.heat_h }} h</td>
+        <td class="right num cool">{{ r.runtime_total.cool_h }} h</td>
+        <td class="right num">{% if w.median is not none %}{{ w.median }} min{% else %}<span class="muted">—</span>{% endif %}</td>
+        <td class="right num hide-sm">{% if w.slowest is not none %}<span class="{{ 'tag-override' if z.calendar_id and w.slowest > z.lead_minutes }}">{{ w.slowest }} min</span>{% else %}<span class="muted">—</span>{% endif %}
+          {% if w.missed %}<div class="offline" style="font-size:12px">{{ w.missed }} missed</div>{% endif %}</td>
+        <td class="right num hide-sm">{% if r.occupancy.has_data %}{{ r.occupancy.conditioned_empty_h }} h{% else %}<span class="muted">no sensor</span>{% endif %}</td>
+        <td class="hide-sm">{% for name, a in alerts_by_room[z.id] %}<div class="offline" style="font-size:13px">{{ name }}: {{ a.text }}</div>{% else %}<span class="muted">none</span>{% endfor %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
+{% endfor %}
+{% if not any.v %}
+  <div class="panel empty"><strong>No rooms yet</strong>Insights appear once thermostats are in rooms (Setup) and the first history sync has run.</div>
+{% else %}
+  <p class="muted" style="font-size:13px">Warm-up: minutes from when a room's target tightened (a booking, schedule or override starting) until it was within half a degree of it. A slowest time above the room's lead time is highlighted, because bookings may have started before the room was comfortable.</p>
+{% endif %}
+{% endblock %}

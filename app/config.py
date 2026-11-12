@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     alert_setpoint_tolerance_f: float = 3.0
     alert_calendar_minutes: int = 15
 
+    # --- History (ecobee runtime report) ---
+    history_sync_minutes: int = 15  # ecobee uploads 5-minute data about every 15 min
+    history_backfill_days: int = 31  # first sync for a thermostat
+    history_keep_days: int = 400
+
     @field_validator("allowed_email_domains", "admin_emails", mode="before")
     @classmethod
     def _split_csv(cls, v):

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app import alerts, gcal, poller, reconciler
+from app import alerts, gcal, history, poller, reconciler
 from app.auth import (
     Principal,
     current_principal,
@@ -22,6 +22,7 @@ from app.auth import (
 from app.config import get_settings
 from app.db import get_db
 from app.ecobee.backend import AuthRequired, BackendError
+from app.insights import Point, daily_runtime, merge_room, occupancy, warmup_summary, warmups
 from app.models import (
     Alert,
     ApiKey,
@@ -33,6 +34,7 @@ from app.models import (
     Thermostat,
     Zone,
     ZoneGroup,
+    aware,
     utcnow,
 )
 from app.resolver import next_change, resolve
@@ -256,6 +258,35 @@ def zone_status(db: Session, z: Zone, now: datetime | None = None,
     }
 
 
+def room_points(z: Zone, since: datetime, until: datetime | None = None) -> list[Point]:
+    """The room's 5-minute history (all its thermostats merged)."""
+    ids = [t.id for t in z.thermostats]
+    by_t: dict[int, list[Point]] = {i: [] for i in ids}
+    for r in (history.samples(ids, since, until) if ids else []):
+        by_t[r.thermostat_id].append(Point(aware(r.at), r.temp, r.heat_sp, r.cool_sp, r.outdoor,
+                                           r.heat_s, r.cool_s, r.occupied))
+    return merge_room(list(by_t.values()))
+
+
+def room_insights(z: Zone, now: datetime | None = None, days: int = 7) -> dict:
+    """Warm-up times, daily heating/cooling hours and occupancy over the last `days`."""
+    now = now or utcnow()
+    tz = z.campus.timezone if z.campus else get_settings().default_timezone
+    pts = room_points(z, now - timedelta(days=days))
+    ws = warmups(pts)
+    return {
+        "zone_id": z.id, "days": days, "samples": len(pts),
+        "last_sample": pts[-1].at if pts else None,
+        "lead_minutes": z.lead_minutes,
+        "warmups": [w.__dict__ for w in ws[-12:]],
+        "warmup_summary": warmup_summary(ws),
+        "runtime": [{"day": d, "heat_h": h, "cool_h": c} for d, h, c in daily_runtime(pts, tz)],
+        "runtime_total": {"heat_h": round(sum(p.heat_s for p in pts) / 3600, 1),
+                          "cool_h": round(sum(p.cool_s for p in pts) / 3600, 1)},
+        "occupancy": occupancy(pts, z.unoccupied_heat, z.unoccupied_cool),
+    }
+
+
 # ---------- reads ----------
 
 @router.get("/me")
@@ -287,6 +318,21 @@ def get_zone_status(zone_id: int, db: Session = Depends(get_db), _=Depends(curre
     if not z:
         raise HTTPException(404, "zone not found")
     return zone_status(db, z)
+
+
+@router.get("/zones/{zone_id}/history")
+def get_zone_history(zone_id: int, hours: int = 24, db: Session = Depends(get_db),
+                     _=Depends(current_principal)):
+    """5-minute history for the room (≤ 31 days): temp, setpoints, outdoor, runtime."""
+    z = _zone_or_404(db, zone_id)
+    pts = room_points(z, utcnow() - timedelta(hours=min(max(hours, 1), 24 * 31)))
+    return [p.__dict__ for p in pts]
+
+
+@router.get("/zones/{zone_id}/insights")
+def get_zone_insights(zone_id: int, days: int = 7, db: Session = Depends(get_db),
+                      _=Depends(current_principal)):
+    return room_insights(_zone_or_404(db, zone_id), days=min(max(days, 1), 31))
 
 
 @router.get("/groups")
@@ -536,9 +582,11 @@ def ecobee_login(body: LoginIn, p=Depends(require_admin)):
 
 
 @router.post("/jobs/{job}")
-def run_job(job: Literal["poll", "calendar", "reconcile", "alerts"], p=Depends(require_admin)):
+def run_job(job: Literal["poll", "calendar", "reconcile", "alerts", "history"],
+            p=Depends(require_admin)):
     fn = {"poll": poller.poll_once, "calendar": gcal.sync_all,
-          "reconcile": reconciler.reconcile_once, "alerts": alerts.check_once}[job]
+          "reconcile": reconciler.reconcile_once, "alerts": alerts.check_once,
+          "history": history.sync_once}[job]
     return fn()
 
 

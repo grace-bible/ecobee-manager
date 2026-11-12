@@ -20,6 +20,9 @@ spaces. One container + Postgres; web UI and REST API; zones follow Google Works
   can't get stuck either.
 - A change made at the wall stands until the next scheduled transition.
 - Event tags on a booking: `#nohvac`, `#hvac:heat=70`, `#hvac:cool=71`.
+- **History:** ecobee's 5-minute data is kept for 400 days. Room pages chart it, and
+  **Insights** shows heating/cooling hours, how long rooms take to warm up or cool down, and
+  rooms conditioned with nobody in them (where a sensor exists).
 - Ships in **dry run**: reads are live, writes only go to the audit log until `DRY_RUN=false`.
 
 ## Deploy (Komodo, same as stream-scheduler)

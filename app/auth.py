@@ -94,7 +94,7 @@ def current_principal(request: Request, db: Session = Depends(get_db)) -> Princi
         key = db.scalar(select(ApiKey).where(ApiKey.key_hash == hash_key(authz[7:].strip())))
         if not key:
             raise HTTPException(401, "invalid API key")
-        return Principal(f"api:{key.name}", "admin" if key.can_write else "viewer", is_machine=True)
+        return Principal(f"api:{key.name}", key.role, list(key.campus_ids or []), is_machine=True)
 
     token = request.headers.get("cf-access-jwt-assertion") or request.cookies.get("CF_Authorization")
     if token:

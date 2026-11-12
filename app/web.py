@@ -20,6 +20,7 @@ from app.db import get_db
 from app.ecobee.backend import AuthRequired, BackendError
 from app.models import (
     Alert,
+    ApiKey,
     AppUser,
     AuditLog,
     CalendarEvent,
@@ -364,14 +365,42 @@ def audit_page(request: Request, db: Session = Depends(get_db),
 @router.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, db: Session = Depends(get_db),
                   p: Principal = Depends(current_principal)):
+    return _settings(request, db, p)
+
+
+def _settings(request: Request, db: Session, p: Principal, new_key: dict | None = None):
     alert_rows = db.scalars(select(Alert).order_by(Alert.opened_at.desc()).limit(50)).all()
-    users = (db.scalars(select(AppUser).order_by(AppUser.email)).all()
-             if p.role == "admin" else [])
+    admin = p.role == "admin"
+    users = db.scalars(select(AppUser).order_by(AppUser.email)).all() if admin else []
+    keys = [api.api_key_dict(k) for k in db.scalars(select(ApiKey).order_by(ApiKey.name))
+            ] if admin else []
     return render(request, "settings.html", p, creds=db.get(EcobeeCredentials, 1),
                   syncs=db.scalars(select(CalendarSyncState)).all(),
                   google=gcal.configured(), message=request.query_params.get("msg"),
-                  alert_rows=alert_rows, users=users,
+                  alert_rows=alert_rows, users=users, keys=keys, new_key=new_key,
                   all_campuses=db.scalars(select(Campus).order_by(Campus.name)).all())
+
+
+@router.post("/settings/api-keys", response_class=HTMLResponse)
+async def add_api_key(request: Request, db: Session = Depends(get_db),
+                      p: Principal = Depends(require_admin)):
+    form = await request.form()
+    try:
+        body = api.ApiKeyIn(name=form.get("name", "").strip(), role=form.get("role", "viewer"),
+                            campus_ids=[int(x) for x in form.getlist("campus_ids")])
+    except ValidationError as err:
+        raise HTTPException(422, err.errors()[0]["msg"].removeprefix("Value error, ")) from err
+    created = api.create_api_key(body, db, p)
+    db.flush()
+    # Rendered, not redirected: the key is shown once and never goes into a URL.
+    return _settings(request, db, p, new_key=created)
+
+
+@router.post("/settings/api-keys/{key_id}/delete")
+def delete_api_key(key_id: int, db: Session = Depends(get_db),
+                   p: Principal = Depends(require_admin)):
+    api.revoke_api_key(key_id, db, p)
+    return RedirectResponse("/settings?msg=API key revoked#api-keys", status_code=303)
 
 
 @router.post("/settings/users/{user_id}")

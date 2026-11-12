@@ -92,7 +92,7 @@ once by hand) — that's the fallback.
 | `calendar_sync_state` | calendar_id, `sync_token`, last success/error |
 | `audit_log` | who, when, what, source (`ui`/`api`/`calendar`/`schedule`), before/after |
 | `app_user` | email (from Cloudflare Access), role: `admin` / `campus_manager` (scoped to campus ids) / `viewer` |
-| `api_key` | hashed key, name, scopes — for n8n/automation |
+| `api_key` | hashed key, name, role + campus ids (same roles as `app_user`; viewer by default) — for n8n/automation |
 | `ecobee_credentials` | encrypted refresh/access token, last login |
 
 ## 5. Scheduling: how a zone's target is decided

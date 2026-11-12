@@ -1,4 +1,5 @@
-"""Alerts to a Google Chat webhook (docs/SPEC.md §9).
+"""Alerts to a Google Chat webhook (docs/SPEC.md §9): offline, off target, login and
+calendar failures, and ecobee's own device alerts (equipment faults, temperature alerts).
 
 Every minute `check_once()` works out which incidents are true *right now*, opens an
 `alert` row for each new one and resolves rows whose condition cleared. Chat gets one
@@ -44,6 +45,7 @@ class ThermoIn:
     heat: float | None = None
     cool: float | None = None
     occupied_for: timedelta | None = None
+    ecobee_alerts: tuple[dict, ...] = ()  # active alerts on the device itself
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,10 @@ def find_incidents(
             elif t.current_temp > t.cool + tolerance:
                 msg = f"{t.name} is {t.current_temp:g}°F, cooling to {t.cool:g}°F for {mins} min"
                 out[f"setpoint:{t.identifier}"] = ("setpoint", msg)
+
+        for a in t.ecobee_alerts:
+            ref = a.get("ref") or a.get("text", "")[:60]
+            out[f"ecobee:{t.identifier}:{ref}"] = ("ecobee", f"{t.name}: {a.get('text', '')}")
 
     for s in syncs:
         if not s.last_error:
@@ -135,10 +141,12 @@ def gather(now: datetime) -> dict[str, tuple[str, str]]:
                 occ = _occupied_for(cfg, now, ovs, events, blocks, st.min_deadband_f,
                                     setpoint_after)
                 therms.append(ThermoIn(t.identifier, t.name, t.connected, aware(t.last_seen),
-                                       t.current_temp, d.heat, d.cool, occ))
+                                       t.current_temp, d.heat, d.cool, occ,
+                                       tuple(t.ecobee_alerts or ())))
         for t in s.scalars(select(Thermostat)):
             if t.id not in managed:
-                therms.append(ThermoIn(t.identifier, t.name, t.connected, aware(t.last_seen)))
+                therms.append(ThermoIn(t.identifier, t.name, t.connected, aware(t.last_seen),
+                                       ecobee_alerts=tuple(t.ecobee_alerts or ())))
 
         creds = s.get(EcobeeCredentials, 1)
         ecobee_error = creds.last_error if creds else None

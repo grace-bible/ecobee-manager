@@ -15,6 +15,7 @@
       <nav class="mainnav" aria-label="Main">
         <a href="/" {% if section == 'rooms' %}aria-current="page"{% endif %}>Rooms</a>
         <a href="/overrides" {% if section == 'overrides' %}aria-current="page"{% endif %}>Overrides</a>
+        <a href="/insights" {% if section == 'insights' %}aria-current="page"{% endif %}>Insights</a>
         <a class="push" href="/setup" {% if section == 'setup' %}aria-current="page"{% endif %}>Setup</a>
       </nav>
       <span class="who">{{ me.name }}</span>

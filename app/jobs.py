@@ -1,7 +1,7 @@
 """Background jobs, in-process. Single replica assumed (reconcile also takes a PG lock)."""
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -23,7 +23,7 @@ def _safe(fn):
 
 def start() -> None:
     global _scheduler
-    from app import alerts, gcal, poller, reconciler
+    from app import alerts, gcal, history, poller, reconciler
 
     st = get_settings()
     now = datetime.now(UTC)
@@ -37,6 +37,9 @@ def start() -> None:
     _scheduler.add_job(_safe(reconciler.reconcile_once), "interval",
                        seconds=st.reconcile_seconds, id="reconcile")
     _scheduler.add_job(_safe(alerts.check_once), "interval", seconds=60, id="alerts")
+    _scheduler.add_job(_safe(history.sync_once), "interval",
+                       minutes=st.history_sync_minutes, id="history",
+                       next_run_time=now + timedelta(seconds=30))
     _scheduler.start()
     log.info("background jobs started (dry_run=%s)", st.dry_run)
 

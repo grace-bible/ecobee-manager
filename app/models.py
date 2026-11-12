@@ -69,6 +69,8 @@ class Thermostat(Base):
     app_hold_source: Mapped[str | None] = mapped_column(String(32))
     last_full_fetch: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    timezone: Mapped[str | None] = mapped_column(String(64))  # thermostat's own, from ecobee
+    ecobee_alerts: Mapped[list | None] = mapped_column(JSON)  # active alerts on the device
 
     campus: Mapped[Campus | None] = relationship(back_populates="thermostats")
     zone: Mapped["Zone | None"] = relationship(back_populates="thermostats")
@@ -229,3 +231,24 @@ class Alert(Base):
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     notified: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class RuntimeSample(Base):
+    """ecobee runtime report, one row per thermostat per 5 minutes (history and charts)."""
+
+    __tablename__ = "runtime_sample"
+    __table_args__ = (UniqueConstraint("thermostat_id", "at"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    thermostat_id: Mapped[int] = mapped_column(
+        ForeignKey("thermostat.id", ondelete="CASCADE"), index=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    temp: Mapped[float | None] = mapped_column(Float)
+    humidity: Mapped[int | None] = mapped_column(Integer)
+    heat_sp: Mapped[float | None] = mapped_column(Float)
+    cool_sp: Mapped[float | None] = mapped_column(Float)
+    outdoor: Mapped[float | None] = mapped_column(Float)
+    heat_s: Mapped[int] = mapped_column(Integer, default=0)
+    cool_s: Mapped[int] = mapped_column(Integer, default=0)
+    fan_s: Mapped[int] = mapped_column(Integer, default=0)
+    occupied: Mapped[bool | None] = mapped_column(Boolean)
+

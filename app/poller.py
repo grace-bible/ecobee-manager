@@ -62,5 +62,6 @@ def poll_once() -> dict:
                 t.heat_setpoint, t.cool_setpoint = st.heat_setpoint, st.cool_setpoint
                 t.hvac_mode, t.equipment_running = st.hvac_mode, st.equipment_running
                 t.active_hold, t.last_full_fetch = st.active_hold, now
+                t.timezone, t.ecobee_alerts = st.timezone, st.alerts
                 t.revision = revisions[st.identifier]
     return {"summary": len(rows), "fetched": len(to_fetch)}

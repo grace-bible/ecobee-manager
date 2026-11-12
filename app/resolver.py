@@ -202,11 +202,16 @@ def next_change(
     while t < end:
         if resolve(zone, t, overrides, events, blocks).key != current.key:
             # Coarse step found the change; pin it to the first whole minute it holds.
+            # Always a whole minute (up to t rounded up), so the answer is the same however
+            # far `now` has moved — the reconciler compares it with the hold it sent.
             m = (prev + timedelta(minutes=1)).replace(second=0, microsecond=0)
-            while m < t:
+            last = t.replace(second=0, microsecond=0)
+            if last < t:
+                last += timedelta(minutes=1)
+            while m <= last:
                 if resolve(zone, m, overrides, events, blocks).key != current.key:
                     return m
                 m += timedelta(minutes=1)
-            return t
+            return last
         prev, t = t, t + step
     return end

@@ -29,6 +29,7 @@ def poll_once() -> dict:
 
     now = utcnow()
     to_fetch: list[str] = []
+    revisions: dict[str, str] = {}
     with session_scope() as s:
         known = {t.identifier: t for t in s.scalars(select(Thermostat))}
         for r in rows:
@@ -42,7 +43,8 @@ def poll_once() -> dict:
             stale = t.last_full_fetch is None or now - aware(t.last_full_fetch) >= MIN_FETCH_INTERVAL
             if r.revision != t.revision and stale:
                 to_fetch.append(r.identifier)
-                t.revision = r.revision
+                # Recorded only after a successful fetch, so a failed one is retried.
+                revisions[r.identifier] = r.revision
 
     if to_fetch:
         try:
@@ -60,4 +62,5 @@ def poll_once() -> dict:
                 t.heat_setpoint, t.cool_setpoint = st.heat_setpoint, st.cool_setpoint
                 t.hvac_mode, t.equipment_running = st.hvac_mode, st.equipment_running
                 t.active_hold, t.last_full_fetch = st.active_hold, now
+                t.revision = revisions[st.identifier]
     return {"summary": len(rows), "fetched": len(to_fetch)}

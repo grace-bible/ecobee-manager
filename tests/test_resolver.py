@@ -117,3 +117,15 @@ def test_next_change_lands_on_the_boundary_not_the_step_after():
     now = datetime(2026, 11, 11, 13, 14, 37, tzinfo=CT)
     b = BlockIn(weekdays=127, start=time(8), end=time(17))
     assert next_change(Z, now, blocks=[b]) == datetime(2026, 11, 11, 17, 0, tzinfo=CT)
+
+
+def test_next_change_is_a_whole_minute_stable_across_calls():
+    # The override ends between two whole minutes, on the coarse step itself. The hold end
+    # must be the same whole minute whether asked now or a minute later, or the reconciler
+    # sees a "later" end every minute and keeps re-sending.
+    now = NOW + timedelta(seconds=9.9)
+    o = OverrideIn(1, "custom", 70, 74, now - timedelta(minutes=1),
+                   now + timedelta(minutes=10) - timedelta(seconds=0.1), 7)
+    first = next_change(Z, now, overrides=[o])
+    assert first == NOW + timedelta(minutes=11)
+    assert next_change(Z, now + timedelta(minutes=1), overrides=[o]) == first

@@ -1,7 +1,8 @@
 """Desired (resolver) vs. what we last sent → batched ecobee holds.
 
 Write policy:
-- Re-send only when the target changes or our hold is within REFRESH_BEFORE of expiring.
+- Re-send only when the target changes, or our hold is within REFRESH_BEFORE of expiring
+  and a new hold would end later than the one already sent.
   A change made at the wall therefore stands until the next scheduled transition (or
   the hold refresh, ≤ HOLD_HORIZON later) instead of being fought every minute.
 - Every hold ends at the resolver's next change, capped at HOLD_HORIZON, so a dead app
@@ -98,7 +99,11 @@ def plan(now: datetime | None = None) -> list[dict]:
                 needs = (
                     (t.app_hold_heat, t.app_hold_cool) != d.key
                     or sent_until is None
-                    or sent_until - now < REFRESH_BEFORE
+                    # Refresh a hold that is about to lapse, but only if re-sending extends
+                    # it. A hold that already ends at the next change is left alone, or
+                    # the last REFRESH_BEFORE before every transition re-sends each minute.
+                    or (sent_until - now < REFRESH_BEFORE
+                        and until.replace(second=0, microsecond=0) > sent_until)
                     # Only "sent" in dry run → really send once dry run is turned off.
                     or (not st.dry_run and (t.app_hold_source or "").startswith("dry:"))
                 )

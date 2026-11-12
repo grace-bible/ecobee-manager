@@ -83,6 +83,7 @@ once by hand) — that's the fallback.
 | Table | Purpose / key fields |
 |---|---|
 | `campus` | name, timezone |
+| `special_day` | campus_id, building_id (optional), first/last date, closed or special hours (start/end, mode), `closed_mode` (empty/off), `ignore_bookings`, label |
 | `building` | campus_id, name, Workspace `google_building_id` (from the room import) |
 | `room` | campus_id, building_id, name, **`calendar_id`** (Google resource calendar, unique), capacity — what people book |
 | `zone_room` | many-to-many: a zone serves one or more rooms (usually a room has one zone; a hall on two units has two) |
@@ -95,7 +96,7 @@ once by hand) — that's the fallback.
 | `calendar_event` | calendar_id, Google event id, start/end, title, status, `hvac_tag` parsed from title/description |
 | `calendar_sync_state` | calendar_id, `sync_token`, last success/error |
 | `audit_log` | who, when, what, source (`ui`/`api`/`calendar`/`schedule`), before/after |
-| `app_user` | email (from Cloudflare Access), role: `admin` / `campus_manager` (scoped to campus ids) / `viewer` |
+| `app_user` | email (from Cloudflare Access), role: `admin` / `campus_manager` (setup + schedules on its campus ids) / `operator` (overrides only, on its campus ids) / `viewer` |
 | `api_key` | hashed key, name, role + campus ids (same roles as `app_user`; viewer by default) — for n8n/automation |
 | `runtime_sample` | thermostat, 5-min interval (UTC), indoor/outdoor temp, humidity, setpoints, heating/cooling/fan seconds, occupancy — from ecobee's runtime report, kept 400 days |
 | `ecobee_credentials` | encrypted refresh/access token, last login |
@@ -105,12 +106,24 @@ once by hand) — that's the fallback.
 Every minute the **resolver** computes each zone's desired state *for now* by
 taking the highest-priority active source:
 
-1. **Manual override** (thermostat > zone > group > building, newest wins within a level)
+1. **Manual override** (thermostat > zone > group > building > campus, newest wins within a
+   level). A campus override (snow day) beats bookings and schedules.
 2. **Calendar occupancy** — any confirmed event on any of the zone's rooms' calendars
    overlapping `[now + lead, now - tail]` → `occupied` (an event booked in several of
-   the zone's rooms counts once)
-3. **Schedule block** — zone blocks, then group blocks, then building blocks
-4. **Default** → `unoccupied` setpoints for that zone
+   the zone's rooms counts once). All-day/multi-day bookings count only with `#hvac:on`.
+   Skipped on a special day marked "ignore bookings".
+3. **Special day** (`special_day`) — a closure or special hours on given dates for the
+   campus or one building (building wins). Replaces the weekly schedule on those days.
+4. **Schedule block** — zone blocks, then group blocks, then building blocks
+5. **Default** → `unoccupied` setpoints for that zone
+
+**Going live.** `DRY_RUN` is a master switch. With it off, each campus goes live on its own
+(Setup → campus → Go live); a zone can follow its campus or be set live / dry run itself.
+Non-live zones' writes are recorded only.
+
+**Device checks.** The app relies on thermostats being in Auto (holds set heat and cool),
+and on each device's own program being a flat setback (it's the fallback if the app stops).
+A managed thermostat not in Auto raises an alert; both show under Setup → Health checks.
 
 Then **guardrails** clamp setpoints to the zone's `[min, max]`, enforce a
 minimum 4 °F heat/cool deadband, and the **reconciler** diffs desired vs. the

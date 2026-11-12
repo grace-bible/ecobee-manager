@@ -336,3 +336,13 @@ a.plain { color: inherit; }
 .minibars i.h { background: var(--heat); } .minibars i.c { background: var(--cool); }
 .minibars span { height: 13px; font-size: 10.5px; color: var(--muted); white-space: nowrap;
                  align-self: center; width: 0; display: flex; justify-content: center; }
+
+/* ---------- rollout safety ---------- */
+.chips { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.dry-chip { background: var(--warn-soft); color: var(--warn); }
+h1 .dry-chip { vertical-align: middle; font-size: 13px; }
+.card-issue { font-size: 13px; color: var(--warn); background: var(--warn-soft); border-radius: 8px; padding: 6px 10px; }
+.span-all { grid-column: 1 / -1; }
+.add-day summary { cursor: pointer; }
+.add-day .seg { grid-template-columns: 1fr 1fr; }
+.live-panel p { margin: 0 0 10px; }

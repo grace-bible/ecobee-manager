@@ -25,6 +25,15 @@
   {% endfor %}
 </div>
 
+<h2 id="checks">Health checks</h2>
+{% if checks %}
+<p class="muted">Things to fix at the thermostats so the app can do its job, and so they're safe if it ever stops.</p>
+<div class="tablewrap"><table><tbody>
+  {% for c in checks %}<tr><td><span class="badge {{ 'override' if c.kind == 'mode' else '' }}">{{ 'Mode' if c.kind == 'mode' else 'Fallback' }}</span></td>
+    <td>{{ c.message }}</td><td class="hide-sm"><a href="/zones/{{ c.zone_id }}/edit">{{ c.zone }}</a></td></tr>{% endfor %}
+</tbody></table></div>
+{% else %}<p class="muted">All managed thermostats are in Auto, and their own programs are safe setbacks.</p>{% endif %}
+
 <h2 id="thermostats">Thermostats not in a zone</h2>
 {% if unassigned %}
 <p class="muted">The app leaves these alone until they're in a zone.</p>

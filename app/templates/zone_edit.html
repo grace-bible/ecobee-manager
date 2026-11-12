@@ -31,6 +31,13 @@
       </label>
     </div>
     <p><label class="check"><input type="checkbox" name="enabled" {% if not zone or zone.enabled %}checked{% endif %}> The app controls this zone <span class="muted">(untick to pause)</span></label></p>
+    {% set lm = 'inherit' if not zone or zone.live is none else ('live' if zone.live else 'dry') %}
+    <label style="max-width:360px">Sending changes
+      <select name="live_mode">
+        <option value="inherit" {% if lm == 'inherit' %}selected{% endif %}>Follow the campus{% if zone %} ({{ 'live' if zone.campus.live else 'dry run' }}){% endif %}</option>
+        <option value="live" {% if lm == 'live' %}selected{% endif %}>Live: send to thermostats</option>
+        <option value="dry" {% if lm == 'dry' %}selected{% endif %}>Dry run: record only</option>
+      </select></label>
   </div>
 
   <h2>Thermostats</h2>

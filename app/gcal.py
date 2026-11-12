@@ -17,7 +17,7 @@ from sqlalchemy import delete, select
 
 from app.config import get_settings
 from app.db import session_scope
-from app.models import CalendarEvent, CalendarSyncState, Zone, utcnow
+from app.models import CalendarEvent, CalendarSyncState, Room, Zone, utcnow
 from app.resolver import parse_hvac_tags
 
 log = logging.getLogger(__name__)
@@ -97,17 +97,17 @@ def list_buildings() -> list[WorkspaceBuilding]:
             return out
 
 
-def _parse_time(t: dict) -> datetime:
+def _parse_time(t: dict, tz: str | None = None) -> datetime:
     if "dateTime" in t:
         return datetime.fromisoformat(t["dateTime"])
-    # All-day event: treat as the whole local day. Rooms rarely book all-day, but a
-    # retreat or VBS might.
+    # All-day event: the whole day in the room's campus timezone. These only drive HVAC
+    # when tagged #hvac:on (a "closed for painting" block shouldn't heat the room all day).
     from zoneinfo import ZoneInfo
     return datetime.fromisoformat(t["date"]).replace(
-        tzinfo=ZoneInfo(t.get("timeZone") or get_settings().default_timezone))
+        tzinfo=ZoneInfo(tz or t.get("timeZone") or get_settings().default_timezone))
 
 
-def _upsert(s, cal_id: str, ev: dict) -> None:
+def _upsert(s, cal_id: str, ev: dict, tz: str | None = None) -> None:
     existing = s.scalar(select(CalendarEvent).where(
         CalendarEvent.calendar_id == cal_id, CalendarEvent.event_id == ev["id"]))
     if ev.get("status") == "cancelled":
@@ -122,8 +122,9 @@ def _upsert(s, cal_id: str, ev: dict) -> None:
         return
     row = existing or CalendarEvent(calendar_id=cal_id, event_id=ev["id"])
     row.title = (ev.get("summary") or "")[:500]
-    row.starts_at = _parse_time(ev["start"]).astimezone(UTC)
-    row.ends_at = _parse_time(ev["end"]).astimezone(UTC)
+    row.starts_at = _parse_time(ev["start"], tz).astimezone(UTC)
+    row.ends_at = _parse_time(ev["end"], tz).astimezone(UTC)
+    row.all_day = "date" in ev["start"] and "dateTime" not in ev["start"]
     row.status = ev.get("status", "confirmed")
     row.hvac_tag = parse_hvac_tags(ev.get("summary"), ev.get("description"))
     s.add(row)
@@ -133,6 +134,9 @@ def sync_calendar(cal_id: str) -> int:
     """Incremental sync with syncToken; full window re-sync on first run or 410."""
     svc = _service("calendar", "v3")
     st = get_settings()
+    with session_scope() as s:
+        room = s.scalar(select(Room).where(Room.calendar_id == cal_id))
+        tz = room.campus.timezone if room and room.campus else None
     with session_scope() as s:
         state = s.get(CalendarSyncState, cal_id) or CalendarSyncState(calendar_id=cal_id)
         s.add(state)
@@ -160,7 +164,7 @@ def sync_calendar(cal_id: str) -> int:
                 raise
             with session_scope() as s:
                 for ev in resp.get("items", []):
-                    _upsert(s, cal_id, ev)
+                    _upsert(s, cal_id, ev, tz)
                     changed += 1
             page = resp.get("nextPageToken")
             if not page:

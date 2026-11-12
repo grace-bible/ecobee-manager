@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% set section = 'rooms' %}
+{% import "partials/room_ui.html" as ui with context %}
+{% block title %}{{ campus.name }}{% endblock %}
+{% set tz = campus.timezone %}
+{% set can_change = me.can_override and me.may_touch_campus(campus.id) %}
+{% block content %}
+<div class="pagehead">
+  <div>
+    <div class="crumbs"><a href="/">Rooms</a></div>
+    <h1>{{ campus.name }} {% if not campus.live or settings().dry_run %}<span class="chip plain dry-chip">Dry run</span>{% endif %}</h1>
+    <p class="muted" style="margin:0">{{ campus.buildings | length }} building{{ 's' if campus.buildings | length != 1 }} · {{ campus.zones | length }} zone{{ 's' if campus.zones | length != 1 }} · {{ tz }}</p>
+  </div>
+  {% if can_change %}<div class="building-actions">{{ ui.quick_actions('campus', campus.id, campus.name ~ ' (whole campus)') }}</div>{% endif %}
+</div>
+{% if can_change %}<p class="muted" style="margin-top:-8px;font-size:13px">Whole-campus changes beat bookings and schedules (use them for a snow day or an emergency). Changes to a building or zone still take priority over them.</p>{% endif %}
+
+<h2>Closures &amp; special hours</h2>
+<p class="muted">Holidays, closures and one-off hours. They replace the weekly schedule on those days, for the whole campus or one building.</p>
+{% with campus_id=campus.id, building_id=none %}{% include "partials/special_days.html" %}{% endwith %}
+
+<h2>Buildings</h2>
+<div class="rooms">
+  {% for b in campus.buildings %}
+  <a class="card place-card" href="/buildings/{{ b.id }}">
+    <div class="room-name">{{ b.name }}</div>
+    <div class="counts"><span><strong>{{ b.zones | length }}</strong> zone{{ 's' if b.zones | length != 1 }}</span><span><strong>{{ b.rooms | length }}</strong> room{{ 's' if b.rooms | length != 1 }}</span></div>
+  </a>
+  {% else %}<div class="panel muted">No buildings yet.</div>{% endfor %}
+</div>
+
+{{ ui.adjust_dialog() }}
+{% endblock %}

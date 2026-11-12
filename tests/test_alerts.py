@@ -67,3 +67,10 @@ def test_ecobee_device_alerts_become_incidents():
     got = find_incidents(NOW, [therm(ecobee_alerts=(a,))], None, [])
     assert got["ecobee:1:abc-1"] == ("ecobee", "Office: Heating is not working")
     assert find_incidents(NOW, [therm(ecobee_alerts=())], None, []) == {}
+
+
+def test_managed_thermostat_not_in_auto_is_an_incident():
+    got = find_incidents(NOW, [therm(hvac_mode="cool")], None, [])
+    assert got["mode:1"][0] == "mode" and "cool only" in got["mode:1"][1]
+    assert find_incidents(NOW, [therm(hvac_mode="auto")], None, []) == {}
+    assert find_incidents(NOW, [therm(hvac_mode=None)], None, []) == {}  # unmanaged

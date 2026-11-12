@@ -1,0 +1,50 @@
+{# Closures and special hours. Needs: days (list of dicts), campus_id, building_id (or none),
+   editable, tz. Building pages show the campus's days too (read-only there). #}
+<div class="tablewrap"><table>
+  <tbody>
+  {% for d in days %}
+    <tr>
+      <td class="num">{{ d.first.strftime('%a %b %-d') }}{% if d.last != d.first %} – {{ d.last.strftime('%a %b %-d') }}{% endif %}</td>
+      <td><strong>{{ d.label or ('Closed' if d.closed else 'Special hours') }}</strong>
+        {% if not building_id and d.building_id %}<span class="muted">· one building</span>{% elif building_id and not d.building_id %}<span class="muted">· whole campus</span>{% endif %}</td>
+      <td>{% if d.closed %}{{ 'Off' if d.closed_mode == 'off' else 'Closed (empty settings)' }}
+          {% else %}{{ INTENTS.get(d.mode, d.mode) }} {{ d.start }}–{{ d.end }}, {{ 'off' if d.closed_mode == 'off' else 'empty' }} otherwise{% endif %}
+          {% if d.ignore_bookings %}<span class="tag-override">· ignores bookings</span>{% endif %}</td>
+      <td class="right">{% if editable and (d.building_id == building_id or not building_id) %}<form class="inline" method="post" action="/special-days/{{ d.id }}/delete" onsubmit="return confirm('Remove this special day?')"><button class="secondary small">Remove</button></form>{% endif %}</td>
+    </tr>
+  {% else %}<tr><td class="muted">No closures or special hours coming up. The weekly schedule applies.</td></tr>{% endfor %}
+  </tbody>
+</table></div>
+{% if editable %}
+<details class="panel add-day">
+  <summary><strong>+ Add a closure or special hours</strong></summary>
+  <form method="post" action="/special-days" class="formgrid" style="margin-top:14px">
+    <input type="hidden" name="campus_id" value="{{ campus_id }}">
+    {% if building_id %}<input type="hidden" name="building_id" value="{{ building_id }}">{% endif %}
+    <label>What <input name="label" placeholder="e.g. Christmas Day, Snow day, Christmas Eve services"></label>
+    <label>First day <input type="date" name="first" required></label>
+    <label>Last day <input type="date" name="last"><span class="muted" style="font-weight:400">Leave empty for one day</span></label>
+    <fieldset class="span-all"><legend class="muted" style="font-size:13px;font-weight:550;margin-bottom:6px">On those days</legend>
+      <div class="seg" style="max-width:420px">
+        <label><input type="radio" name="kind" value="closed" checked><span>Closed all day</span></label>
+        <label><input type="radio" name="kind" value="hours"><span>Special hours</span></label>
+      </div></fieldset>
+    <div class="hours-only formgrid span-all" style="padding:0" hidden>
+      <label>Open from <input type="time" name="start" value="16:00"></label>
+      <label>Until <input type="time" name="end" value="23:00"></label>
+      <label>During those hours
+        <select name="mode"><option value="occupied">In use</option><option value="unoccupied">Empty</option></select></label>
+    </div>
+    <label>When closed
+      <select name="closed_mode"><option value="unoccupied">Empty settings</option><option value="off">Off (widest safe band)</option></select></label>
+    <label class="check span-all"><input type="checkbox" name="ignore_bookings"> Ignore bookings too <span class="muted">(otherwise a booking on these days still heats or cools its rooms)</span></label>
+    <div class="formfoot span-all" style="margin-top:4px"><button>Add</button></div>
+  </form>
+</details>
+<script>
+document.querySelectorAll('.add-day form').forEach(f => {
+  const sync = () => f.querySelector('.hours-only').hidden = f.elements.kind.value !== 'hours';
+  f.addEventListener('change', sync); sync();
+});
+</script>
+{% endif %}

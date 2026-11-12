@@ -5,6 +5,8 @@ Write policy:
   and a new hold would end later than the one already sent.
   A change made at the wall therefore stands until the next scheduled transition (or
   the hold refresh, ≤ HOLD_HORIZON later) instead of being fought every minute.
+- Only live zones really write: DRY_RUN off (master switch) and the zone's campus (or the
+  zone itself) switched live. Others go through the dry-run backend and the audit log.
 - Every hold ends HOLD_OVERLAP after the resolver's next change, capped at HOLD_HORIZON, so
   a dead app leaves thermostats on their own program within hours, never stuck. The overlap
   covers the up-to-a-minute until the next reconcile sends the new target; without it the
@@ -16,6 +18,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import or_, select, text
 from sqlalchemy.orm import selectinload
@@ -28,13 +31,23 @@ from app.models import (
     CalendarEvent,
     Override,
     ScheduleBlock,
+    SpecialDay,
     Thermostat,
     Zone,
     aware,
     utcnow,
 )
-from app.resolver import BlockIn, Desired, EventIn, OverrideIn, ZoneCfg, next_change, resolve
-from app.services import get_backend
+from app.resolver import (
+    BlockIn,
+    DayIn,
+    Desired,
+    EventIn,
+    OverrideIn,
+    ZoneCfg,
+    next_change,
+    resolve,
+)
+from app.services import dry_backend, raw_backend, zone_is_live
 
 log = logging.getLogger(__name__)
 REFRESH_BEFORE = timedelta(minutes=15)
@@ -56,10 +69,12 @@ def gather_inputs(s, z: Zone, now: datetime, horizon: timedelta):
         Override.starts_at < now + horizon)).all()
     zone_ovs, therm_ovs = [], defaultdict(list)
     for o in ovs:
-        level = 0 if o.thermostat_id else 1 if o.zone_id else 2 if o.group_id else 3
+        level = (0 if o.thermostat_id else 1 if o.zone_id else 2 if o.group_id
+                 else 3 if o.building_id else 4)
         oi = OverrideIn(level, o.mode, o.heat, o.cool, aware(o.starts_at), aware(o.ends_at), o.id)
         if (o.zone_id == z.id or (o.group_id and o.group_id in group_ids)
-                or (o.building_id and o.building_id == z.building_id)):
+                or (o.building_id and o.building_id == z.building_id)
+                or (o.campus_id and o.campus_id == z.campus_id)):
             zone_ovs.append(oi)
         elif o.thermostat_id:
             therm_ovs[o.thermostat_id].append(oi)
@@ -78,7 +93,8 @@ def gather_inputs(s, z: Zone, now: datetime, horizon: timedelta):
                 continue
             seen.add(e.event_id)
             events.append(EventIn(aware(e.starts_at), aware(e.ends_at), e.title or "",
-                                  e.hvac_tag, e.event_id, room_of.get(e.calendar_id)))
+                                  e.hvac_tag, e.event_id, room_of.get(e.calendar_id),
+                                  bool(e.all_day)))
 
     owner = [ScheduleBlock.zone_id == z.id]
     if group_ids:
@@ -88,7 +104,18 @@ def gather_inputs(s, z: Zone, now: datetime, horizon: timedelta):
     blocks = [BlockIn(b.weekdays, b.start, b.end, b.mode, b.heat, b.cool,
                       0 if b.zone_id else 1 if b.group_id else 2, b.id)
               for b in s.scalars(select(ScheduleBlock).where(or_(*owner)))]
-    return zone_ovs, therm_ovs, events, blocks
+
+    # Closures / special hours for the zone's campus or building, around this window.
+    tz = ZoneInfo(z.campus.timezone if z.campus else get_settings().default_timezone)
+    first, last = (now - timedelta(days=1)).astimezone(tz).date(), (
+        now + horizon + timedelta(days=1)).astimezone(tz).date()
+    days = [DayIn(d.first, d.last, d.closed, d.start, d.end, d.mode, d.heat, d.cool,
+                  d.closed_mode, d.ignore_bookings, 0 if d.building_id else 1, d.id, d.label)
+            for d in s.scalars(select(SpecialDay).where(
+                SpecialDay.campus_id == z.campus_id, SpecialDay.first <= last,
+                SpecialDay.last >= first,
+                or_(SpecialDay.building_id.is_(None), SpecialDay.building_id == z.building_id)))]
+    return zone_ovs, therm_ovs, events, blocks, days
 
 
 def plan(now: datetime | None = None) -> list[dict]:
@@ -103,11 +130,12 @@ def plan(now: datetime | None = None) -> list[dict]:
             selectinload(Zone.campus), selectinload(Zone.rooms))).all()
         for z in zones:
             cfg = zone_cfg(z)
-            zone_ovs, therm_ovs, events, blocks = gather_inputs(s, z, now, horizon)
+            live = zone_is_live(z)
+            zone_ovs, therm_ovs, events, blocks, days = gather_inputs(s, z, now, horizon)
             for t in z.thermostats:
                 ovs = zone_ovs + therm_ovs.get(t.id, [])
-                d: Desired = resolve(cfg, now, ovs, events, blocks, st.min_deadband_f)
-                until = next_change(cfg, now, ovs, events, blocks, horizon=horizon)
+                d: Desired = resolve(cfg, now, ovs, events, blocks, st.min_deadband_f, days)
+                until = next_change(cfg, now, ovs, events, blocks, horizon=horizon, days=days)
                 hold_until = min(until + HOLD_OVERLAP, now + horizon)
                 sent_until = aware(t.app_hold_until)
                 needs = (
@@ -118,14 +146,15 @@ def plan(now: datetime | None = None) -> list[dict]:
                     # the last REFRESH_BEFORE before every transition re-sends each minute.
                     or (sent_until - now < REFRESH_BEFORE
                         and hold_until.replace(second=0, microsecond=0) > sent_until)
-                    # Only "sent" in dry run → really send once dry run is turned off.
-                    or (not st.dry_run and (t.app_hold_source or "").startswith("dry:"))
+                    # Only "sent" in dry run → really send once the zone goes live.
+                    or (live and (t.app_hold_source or "").startswith("dry:"))
                 )
                 out.append({
                     "thermostat_id": t.id, "identifier": t.identifier, "name": t.name,
                     "zone": z.name, "connected": t.connected, "tz": cfg.timezone,
                     "heat": d.heat, "cool": d.cool, "source": d.source, "ref": d.ref,
                     "intent": d.intent, "notes": d.notes, "until": until, "hold_until": hold_until,
+                    "live": live,
                     "needs_write": needs,
                 })
     return out
@@ -149,18 +178,18 @@ def reconcile_once() -> dict:
 
 
 def _reconcile() -> dict:
-    backend = get_backend()
     now = utcnow()
     items = [p for p in plan(now) if p["needs_write"] and p["connected"]]
     # Same target + same end + same timezone → one API call for all of them.
     batches: dict[tuple, list[dict]] = defaultdict(list)
     for p in items:
         until = p["hold_until"].replace(second=0, microsecond=0)
-        batches[(p["heat"], p["cool"], until, p["tz"])].append(p)
+        batches[(p["heat"], p["cool"], until, p["tz"], p["live"])].append(p)
 
     sent, failed = 0, 0
-    for (heat, cool, until, tz), group in batches.items():
+    for (heat, cool, until, tz, live), group in batches.items():
         ids = [p["identifier"] for p in group]
+        backend = raw_backend() if live else dry_backend()
         try:
             backend.set_hold(ids, heat, cool, until, tz)
         except BackendError as err:
@@ -171,7 +200,7 @@ def _reconcile() -> dict:
                                target=",".join(ids), detail={"error": str(err)}))
             continue
         sent += len(ids)
-        dry = get_settings().dry_run
+        dry = not live
         with session_scope() as s:
             for p in group:
                 t = s.get(Thermostat, p["thermostat_id"])

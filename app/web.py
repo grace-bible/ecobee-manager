@@ -14,7 +14,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app import alerts, api, gcal, reconciler
-from app.auth import Principal, current_principal, require_admin, require_write
+from app.auth import (
+    Principal,
+    current_principal,
+    require_admin,
+    require_override,
+    require_write,
+)
 from app.charts import room_chart
 from app.config import get_settings
 from app.db import get_db
@@ -72,7 +78,7 @@ def _fmt_deg(v: float | None) -> str:
 
 INTENTS = {"occupied": "In use", "unoccupied": "Empty", "off": "Off", "custom": "Custom"}
 SOURCES = {"override": "Override", "calendar": "Booking", "schedule": "Weekly schedule",
-           "default": "No schedule"}
+           "special": "Special day", "default": "No schedule"}
 
 templates.env.filters["local"] = _fmt_local
 templates.env.filters["when"] = _fmt_when
@@ -121,6 +127,61 @@ def rooms(request: Request, campus: int | None = None, db: Session = Depends(get
                   groups=groups, campus=campus, unassigned=unassigned)
 
 
+@router.get("/campuses/{campus_id}", response_class=HTMLResponse)
+def campus_page(request: Request, campus_id: int, db: Session = Depends(get_db),
+                p: Principal = Depends(current_principal)):
+    """Operator view of a whole campus: campus-wide changes and special days."""
+    c = db.get(Campus, campus_id)
+    if not c:
+        raise HTTPException(404)
+    now = utcnow()
+    return render(request, "campus.html", p, campus=c,
+                  status={z.id: api.zone_status(db, z, now) for z in c.zones if z.enabled},
+                  days=api.list_special_days(c.id, True, db, p),
+                  editable=p.can_write and p.may_touch_campus(c.id))
+
+
+@router.post("/special-days")
+async def add_special_day(request: Request, db: Session = Depends(get_db),
+                          p: Principal = Depends(require_write)):
+    form = await request.form()
+    closed = form.get("kind", "closed") == "closed"
+    try:
+        body = api.SpecialDayIn(
+            campus_id=int(form["campus_id"]), building_id=_int(form.get("building_id")),
+            first=form.get("first") or None, last=form.get("last") or None, closed=closed,
+            start=form.get("start") or None, end=form.get("end") or None,
+            mode=form.get("mode") or "occupied", closed_mode=form.get("closed_mode") or "unoccupied",
+            ignore_bookings="ignore_bookings" in form, label=(form.get("label") or "").strip() or None)
+    except ValidationError as err:
+        msg = err.errors()[0]
+        text = msg["msg"].removeprefix("Value error, ")
+        if msg.get("loc") and msg["loc"][0] == "first":
+            text = "pick the first day"
+        raise HTTPException(422, text) from err
+    api.create_special_day(body, db, p)
+    return _back(request)
+
+
+@router.post("/special-days/{day_id}/delete")
+def remove_special_day(request: Request, day_id: int, db: Session = Depends(get_db),
+                       p: Principal = Depends(require_write)):
+    api.delete_special_day(day_id, db, p)
+    return _back(request)
+
+
+@router.post("/campuses/{campus_id}/live")
+def set_campus_live(campus_id: int, live: str = Form(...), db: Session = Depends(get_db),
+                    p: Principal = Depends(require_admin)):
+    c = db.get(Campus, campus_id)
+    if not c:
+        raise HTTPException(404)
+    api.update_campus(campus_id, api.CampusIn(name=c.name, timezone=c.timezone,
+                                              live=live == "on"), db, p)
+    msg = "Live: changes now go to the thermostats" if live == "on" else "Back in dry run"
+    return RedirectResponse(f"/setup/campuses/{campus_id}?msg={msg}", status_code=303)
+
+
 @router.get("/buildings/{building_id}", response_class=HTMLResponse)
 def building_page(request: Request, building_id: int, db: Session = Depends(get_db),
                   p: Principal = Depends(current_principal)):
@@ -130,7 +191,9 @@ def building_page(request: Request, building_id: int, db: Session = Depends(get_
     now = utcnow()
     blocks = db.scalars(select(ScheduleBlock).where(ScheduleBlock.building_id == b.id)
                         .order_by(ScheduleBlock.start)).all()
-    return render(request, "building.html", p, building=b,
+    days = [d for d in api.list_special_days(b.campus_id, True, db, p)
+            if d["building_id"] in (None, b.id)]
+    return render(request, "building.html", p, building=b, days=days,
                   status={z.id: api.zone_status(db, z, now) for z in b.zones if z.enabled},
                   blocks=[api.block_dict(x) for x in blocks],
                   editable=p.can_write and p.may_touch_campus(b.campus_id))
@@ -156,7 +219,7 @@ def insights_page(request: Request, days: int = 7, db: Session = Depends(get_db)
 def setup_page(request: Request, db: Session = Depends(get_db),
                p: Principal = Depends(current_principal)):
     return render_setup(request, "setup.html", p, db, current=("overview", None),
-                        google=gcal.configured())
+                        google=gcal.configured(), checks=api.health_checks(db))
 
 
 def render_setup(request: Request, name: str, p: Principal, db: Session,
@@ -265,12 +328,12 @@ def _preview(db: Session, zone: Zone, now: datetime, hours: int = 48) -> list[di
     from app.resolver import resolve
     cfg = reconciler.zone_cfg(zone)
     horizon = timedelta(hours=hours)
-    zone_ovs, _, events, blocks = reconciler.gather_inputs(db, zone, now, horizon)
+    zone_ovs, _, events, blocks, days = reconciler.gather_inputs(db, zone, now, horizon)
     # Step on the quarter hour so an 08:00 block shows as 08:00, not 08:14.
     start = now.replace(minute=now.minute - now.minute % 15, second=0, microsecond=0)
     spans, t, step = [], start, timedelta(minutes=15)
     while t < now + horizon:
-        d = resolve(cfg, t, zone_ovs, events, blocks, get_settings().min_deadband_f)
+        d = resolve(cfg, t, zone_ovs, events, blocks, get_settings().min_deadband_f, days)
         if spans and spans[-1]["key"] == (d.key, d.source):
             spans[-1]["end"] = t + step
         else:
@@ -290,6 +353,8 @@ async def save_zone(request: Request, zone_id: int | None = None, db: Session = 
     data["enabled"] = "enabled" in form
     data["thermostat_ids"] = [int(x) for x in form.getlist("thermostat_ids")]
     data["room_ids"] = [int(x) for x in form.getlist("room_ids")]
+    data["live"] = {"live": True, "dry": False}.get(form.get("live_mode", ""))
+    data.pop("live_mode", None)
     try:
         body = api.ZoneIn(**data)
     except ValidationError as err:
@@ -542,7 +607,7 @@ def delete_block(request: Request, block_id: int, db: Session = Depends(get_db),
 
 @router.post("/overrides")
 async def add_override(request: Request, db: Session = Depends(get_db),
-                       p: Principal = Depends(require_write)):
+                       p: Principal = Depends(require_override)):
     """One override per selected zone, or one for the chosen group or building."""
     form = await request.form()
     common = {
@@ -554,6 +619,7 @@ async def add_override(request: Request, db: Session = Depends(get_db),
     }
     targets = ([("group", int(form["group_id"]))] if form.get("group_id")
                else [("building", int(form["building_id"]))] if form.get("building_id")
+               else [("campus", int(form["campus_id"]))] if form.get("campus_id")
                else [("zone", z) for z in sorted({int(z) for z in form.getlist("zone_ids")})])
     if not targets:
         raise HTTPException(400, "pick at least one zone, a group or a building")
@@ -567,7 +633,7 @@ async def add_override(request: Request, db: Session = Depends(get_db),
 
 @router.post("/overrides/{override_id}/cancel")
 def cancel(request: Request, override_id: int, db: Session = Depends(get_db),
-           p: Principal = Depends(require_write)):
+           p: Principal = Depends(require_override)):
     api.cancel_override(override_id, db, p)
     return _back(request)
 
@@ -581,10 +647,13 @@ def overrides_page(request: Request, db: Session = Depends(get_db),
     names = {("zone", z.id): z.name for z in db.scalars(select(Zone))}
     names |= {("group", g.id): g.name for g in db.scalars(select(ZoneGroup))}
     names |= {("thermostat", t.id): t.name for t in db.scalars(select(Thermostat))}
+    names |= {("building", b.id): b.name for b in db.scalars(select(Building))}
+    names |= {("campus", c.id): c.name for c in db.scalars(select(Campus))}
     cancellable = set()
-    if p.can_write:
+    if p.can_override:
         for o in rows:
-            kinds = [(k, getattr(o, f"{k}_id")) for k in ("thermostat", "zone", "group")]
+            kinds = [(k, getattr(o, f"{k}_id"))
+                     for k in ("thermostat", "zone", "group", "building", "campus")]
             if all(p.may_touch_campus(c) for k, i in kinds
                    for c in api.target_campuses(db, k, i)):
                 cancellable.add(o.id)

@@ -67,6 +67,9 @@ class ThermostatState:
     timezone: str | None
     # Active ecobee alerts on the device: [{"ref", "text", "severity", "type"}]
     alerts: list[dict] = field(default_factory=list)
+    # The device's own program (its fallback if the app stops): the comfort settings its
+    # weekly schedule uses, in °F: {"climates": [{"name", "heat", "cool"}]}
+    program: dict | None = None
 
 
 @dataclass
@@ -123,6 +126,15 @@ def _runtime_row(ident: str, line: str, tz: ZoneInfo) -> RuntimeRow | None:
                       num(p[4]), num(p[5]), num(p[6]),
                       heat_s=secs(p[7], p[8], p[9], p[10]), cool_s=secs(p[11], p[12]),
                       fan_s=secs(p[13]), occupied=None if p[14] == "" else p[14] == "1")
+
+
+def _program(prog: dict) -> dict | None:
+    """Comfort settings the device's weekly schedule actually uses (°F)."""
+    used = {ref for day in prog.get("schedule", []) for ref in day}
+    climates = [{"name": c.get("name") or c.get("climateRef"), "heat": _f(c.get("heatTemp")),
+                 "cool": _f(c.get("coolTemp"))}
+                for c in prog.get("climates", []) if c.get("climateRef") in used]
+    return {"climates": climates} if climates else None
 
 
 def _f(tenths) -> float | None:
@@ -252,7 +264,7 @@ class EcobeeCloudBackend:
                 "selectionType": "thermostats", "selectionMatch": ",".join(chunk),
                 "includeRuntime": True, "includeSettings": True, "includeEvents": True,
                 "includeEquipmentStatus": True, "includeLocation": True,
-                "includeAlerts": True,
+                "includeAlerts": True, "includeProgram": True,
             }}
             resp = self._call("GET", "thermostat", "get thermostats",
                               params={"json": json.dumps(sel)})
@@ -272,6 +284,7 @@ class EcobeeCloudBackend:
                     equipment_running=t.get("equipmentStatus", ""),
                     active_hold=hold,
                     timezone=t.get("location", {}).get("timeZone"),
+                    program=_program(t.get("program") or {}),
                     alerts=[{"ref": a.get("acknowledgeRef"), "text": a.get("text", ""),
                              "severity": a.get("severity"), "type": a.get("alertType")}
                             for a in t.get("alerts", [])],

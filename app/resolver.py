@@ -1,10 +1,13 @@
 """Decide what each zone should be doing right now. Pure functions, no I/O.
 
 Priority (docs/SPEC.md §5):
-  1. manual override   thermostat > zone > group > building, newest first within a level
-  2. calendar event    on any of the zone's rooms' calendars, widened by lead/tail
-  3. schedule block    zone blocks, then group blocks, then building blocks
-  4. default           zone's unoccupied setpoints
+  1. manual override   thermostat > zone > group > building > campus, newest first in a level
+  2. calendar event    on any of the zone's rooms' calendars, widened by lead/tail (all-day
+                       bookings only with #hvac:on; skipped on a closure that ignores them)
+  3. special day       closure or special hours for the building or campus (building wins);
+                       replaces the weekly schedule for that day
+  4. schedule block    zone blocks, then group blocks, then building blocks
+  5. default           zone's unoccupied setpoints
 Then guardrails clamp to [min, max] and enforce a heat/cool deadband.
 """
 
@@ -12,7 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 OCCUPIED, UNOCCUPIED, OFF, CUSTOM = "occupied", "unoccupied", "off", "custom"
@@ -20,6 +23,7 @@ WEEKDAY_BITS = {i: 1 << i for i in range(7)}  # Mon=0 → 1 … Sun=6 → 64
 
 _TAG_NOHVAC = re.compile(r"#no-?hvac\b", re.IGNORECASE)
 _TAG_SET = re.compile(r"#hvac:(heat|cool)=(\d{2}(?:\.\d)?)", re.IGNORECASE)
+_TAG_ON = re.compile(r"#hvac:on\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -37,7 +41,7 @@ class ZoneCfg:
 
 @dataclass(frozen=True)
 class OverrideIn:
-    level: int  # 0 = thermostat, 1 = zone, 2 = group, 3 = building (lower wins)
+    level: int  # 0 thermostat, 1 zone, 2 group, 3 building, 4 campus (lower wins)
     mode: str
     heat: float | None
     cool: float | None
@@ -54,6 +58,7 @@ class EventIn:
     tag: dict | None = None  # output of parse_hvac_tags
     id: str | None = None
     room: str | None = None  # which of the zone's rooms it's booked in (display only)
+    all_day: bool = False  # all-day / multi-day bookings count only when tagged #hvac:on
 
 
 @dataclass(frozen=True)
@@ -66,6 +71,25 @@ class BlockIn:
     cool: float | None = None
     level: int = 0  # 0 = zone, 1 = group, 2 = building (lower wins)
     id: int | None = None
+
+
+@dataclass(frozen=True)
+class DayIn:
+    """A closure or special hours on specific dates (campus-local, inclusive)."""
+
+    first: date
+    last: date
+    closed: bool = True  # closed all day; False = open only start..end
+    start: time | None = None
+    end: time | None = None
+    mode: str = OCCUPIED  # during special hours
+    heat: float | None = None
+    cool: float | None = None
+    closed_mode: str = UNOCCUPIED  # when closed / outside special hours: unoccupied or off
+    ignore_bookings: bool = False
+    level: int = 0  # 0 = building, 1 = campus (lower wins)
+    id: int | None = None
+    label: str | None = None
 
 
 @dataclass
@@ -92,7 +116,9 @@ def parse_hvac_tags(*texts: str | None) -> dict | None:
         return None
     if _TAG_NOHVAC.search(blob):
         return {"ignore": True}
-    found = {k.lower(): float(v) for k, v in _TAG_SET.findall(blob)}
+    found: dict = {k.lower(): float(v) for k, v in _TAG_SET.findall(blob)}
+    if _TAG_ON.search(blob):
+        found["on"] = True
     return found or None
 
 
@@ -149,9 +175,13 @@ def resolve(
     events: list[EventIn] = (),
     blocks: list[BlockIn] = (),
     deadband: float = 4.0,
+    days: list[DayIn] = (),
 ) -> Desired:
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
+    local = now.astimezone(ZoneInfo(zone.timezone))
+    today = [d for d in days if d.first <= local.date() <= d.last]
+    day = min(today, key=lambda d: d.level) if today else None
 
     # 1. Overrides
     live = [o for o in overrides if o.starts_at <= now < o.ends_at]
@@ -161,8 +191,13 @@ def resolve(
 
     # 2. Calendar
     lead, tail = timedelta(minutes=zone.lead_minutes), timedelta(minutes=zone.tail_minutes)
-    hits = [e for e in events
-            if not (e.tag or {}).get("ignore") and e.starts_at - lead <= now < e.ends_at + tail]
+    def counts(e: EventIn) -> bool:
+        tag = e.tag or {}
+        if tag.get("ignore") or (e.all_day and not (tag.keys() & {"on", "heat", "cool"})):
+            return False
+        return e.starts_at - lead <= now < e.ends_at + tail
+
+    hits = [] if day and day.ignore_bookings else [e for e in events if counts(e)]
     if hits:
         e = min(hits, key=lambda e: e.starts_at)
         tag = e.tag or {}
@@ -175,14 +210,24 @@ def resolve(
             d.notes.append("event tag applied")
         return d
 
-    # 3. Schedule (zone blocks beat group blocks beat building blocks)
-    local = now.astimezone(ZoneInfo(zone.timezone))
+    # 3. Special day (closure / special hours) replaces the weekly schedule
+    if day:
+        open_now = (not day.closed and day.start is not None and day.end is not None
+                    and day.start <= local.time() < day.end)
+        mode = day.mode if open_now else day.closed_mode
+        d = _make(mode, zone, day.heat if open_now else None, day.cool if open_now else None,
+                  "special", f"day:{day.id}", deadband)
+        if day.label:
+            d.notes.append(day.label)
+        return d
+
+    # 4. Schedule (zone blocks beat group blocks beat building blocks)
     active = [b for b in blocks if _block_active(b, local)]
     if active:
         b = min(active, key=lambda b: b.level)
         return _make(b.mode, zone, b.heat, b.cool, "schedule", f"block:{b.id}", deadband)
 
-    # 4. Default
+    # 5. Default
     return _make(UNOCCUPIED, zone, None, None, "default", None, deadband)
 
 
@@ -194,14 +239,15 @@ def next_change(
     blocks: list[BlockIn] = (),
     horizon: timedelta = timedelta(hours=4),
     step: timedelta = timedelta(minutes=5),
+    days: list[DayIn] = (),
 ) -> datetime:
     """When does the resolved target next change? Used as the hold end time, so a
     hold never outlives the reason for it (capped at `horizon`)."""
-    current = resolve(zone, now, overrides, events, blocks)
+    current = resolve(zone, now, overrides, events, blocks, days=days)
     end = now + horizon
     prev, t = now, now + step
     while t < end:
-        if resolve(zone, t, overrides, events, blocks).key != current.key:
+        if resolve(zone, t, overrides, events, blocks, days=days).key != current.key:
             # Coarse step found the change; pin it to the first whole minute it holds.
             # Always a whole minute (up to t rounded up), so the answer is the same however
             # far `now` has moved — the reconciler compares it with the hold it sent.
@@ -210,7 +256,7 @@ def next_change(
             if last < t:
                 last += timedelta(minutes=1)
             while m <= last:
-                if resolve(zone, m, overrides, events, blocks).key != current.key:
+                if resolve(zone, m, overrides, events, blocks, days=days).key != current.key:
                     return m
                 m += timedelta(minutes=1)
             return last

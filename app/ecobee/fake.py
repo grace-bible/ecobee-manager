@@ -16,7 +16,9 @@ class FakeBackend:
     def __init__(self):
         self.state = {
             i: ThermostatState(i, n, "nikeSmart", True, 71.5 + k * 0.5, 45, 62, 80, "auto",
-                               "", None, "America/Chicago")
+                               "", None, "America/Chicago",
+                               program={"climates": [{"name": "Away", "heat": 58.0,
+                                                      "cool": 85.0}]})
             for k, (i, n) in enumerate(_SEED)
         }
         self.rev = 0

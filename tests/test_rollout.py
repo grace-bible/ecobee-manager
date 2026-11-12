@@ -138,7 +138,6 @@ def test_pages_forms_and_operator_view(monkeypatch):
         assert "Back to dry run" in c.get(f"/setup/campuses/{cid}").text
         assert "Health checks" in c.get("/setup").text
         # Operator: quick actions yes, schedule editor and settings no.
-        c.post("/api/v1/campuses", json={"name": "zz"})  # noqa: just more data
         monkeypatch.setattr(get_settings(), "dev_auth_email", "op@example.org")
         c.get("/")  # creates the user as a viewer
         monkeypatch.setattr(get_settings(), "dev_auth_email", "admin@example.org")

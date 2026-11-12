@@ -3,30 +3,42 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Thermostats{% endblock %} · GBC</title>
+  <title>{% block title %}Thermostats{% endblock %} · GBC Thermostats</title>
   <script src="https://unpkg.com/htmx.org@2.0.3" defer></script>
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v={{ css_version }}">
 </head>
+{% set section = section | default('rooms') %}
 <body>
-  <header>
-    <a class="brand" href="/">GBC Thermostats</a>
-    <nav>
-      <a href="/">Overview</a>
-      <a href="/groups">Groups</a>
-      <a href="/overrides">Overrides</a>
-      <a href="/audit">Audit log</a>
-      <a href="/settings">Settings</a>
-    </nav>
-    <span class="who">{{ me.name }} · {{ me.role }}</span>
+  <header class="topbar">
+    <div class="topbar-in">
+      <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"><svg width="14" height="16" viewBox="0 0 14 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 9.5V3a2 2 0 1 1 4 0v6.5a3.5 3.5 0 1 1-4 0Z"/><path d="M7 6.5v5"/></svg></span>GBC Thermostats</a>
+      <nav class="mainnav" aria-label="Main">
+        <a href="/" {% if section == 'rooms' %}aria-current="page"{% endif %}>Rooms</a>
+        <a href="/overrides" {% if section == 'overrides' %}aria-current="page"{% endif %}>Overrides</a>
+        <a class="push" href="/setup" {% if section == 'setup' %}aria-current="page"{% endif %}>Setup</a>
+      </nav>
+      <span class="who">{{ me.name }}</span>
+    </div>
   </header>
   {% if settings().dry_run %}
-  <div class="banner warn">Dry run: the scheduler logs what it would send but doesn't touch any thermostat. Set <code>DRY_RUN=false</code> to go live.</div>
+  <div class="banner warn"><div><strong>Dry run.</strong> Changes are recorded but not sent to any thermostat yet.</div></div>
   {% endif %}
   {% set alerts = open_alerts() %}
   {% if alerts %}
-  <div class="banner bad"><strong>{{ alerts | length }} open alert{{ 's' if alerts | length > 1 }}:</strong>
-    {% for a in alerts[:3] %}{{ a.message }}{% if not loop.last %} · {% endif %}{% endfor %}{% if alerts | length > 3 %} · <a href="/settings#alerts">more</a>{% endif %}</div>
+  <div class="banner bad"><div><strong>{{ alerts | length }} alert{{ 's' if alerts | length > 1 }}:</strong>
+    {% for a in alerts[:3] %}{{ a.message }}{% if not loop.last %} · {% endif %}{% endfor %}{% if alerts | length > 3 %} · <a href="/settings#alerts">see all</a>{% endif %}</div></div>
   {% endif %}
-  <main>{% block content %}{% endblock %}</main>
+  <main>
+    {% if section == 'setup' %}
+    <nav class="subnav" aria-label="Setup">
+      {% set sub = sub | default('') %}
+      <a href="/setup" {% if sub == 'zones' %}aria-current="page"{% endif %}>Rooms &amp; campuses</a>
+      <a href="/groups" {% if sub == 'groups' %}aria-current="page"{% endif %}>Groups</a>
+      <a href="/audit" {% if sub == 'audit' %}aria-current="page"{% endif %}>Activity</a>
+      <a href="/settings" {% if sub == 'system' %}aria-current="page"{% endif %}>System</a>
+    </nav>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
 </body>
 </html>

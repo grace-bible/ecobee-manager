@@ -1,22 +1,32 @@
 {% extends "base.html" %}
+{% set section = 'overrides' %}
+{% import "partials/room_ui.html" as ui with context %}
 {% block title %}Overrides{% endblock %}
 {% block content %}
-<h1>Active overrides</h1>
-<table>
-  <thead><tr><th>Target</th><th>Setting</th><th>Ends</th><th>By</th><th>Reason</th><th></th></tr></thead>
+<div class="pagehead">
+  <div><h1>Overrides</h1>
+    <p class="muted" style="margin:0">Temporary changes people have made. Each ends on its own; the schedule takes over again then.</p></div>
+</div>
+{% if rows %}
+<div class="tablewrap"><table>
+  <thead><tr><th>Room or group</th><th>Set to</th><th>Ends</th><th class="hide-sm">By</th><th></th></tr></thead>
   <tbody>
   {% for o in rows %}
     {% set kind = 'thermostat' if o.thermostat_id else 'zone' if o.zone_id else 'group' %}
     {% set tid = o.thermostat_id or o.zone_id or o.group_id %}
     <tr>
-      <td>{{ kind }}: {{ names.get((kind, tid), tid) }}</td>
-      <td>{{ o.mode }}{% if o.mode == 'custom' %} <span class="heat">{{ o.heat or '' }}</span> / <span class="cool">{{ o.cool or '' }}</span>{% endif %}</td>
-      <td class="num">{{ o.ends_at | local }}</td>
-      <td>{{ o.created_by }}</td>
-      <td class="muted">{{ o.reason or '' }}</td>
-      <td>{% if o.id in cancellable %}<form class="inline" method="post" action="/overrides/{{ o.id }}/cancel"><button class="secondary">Cancel</button></form>{% endif %}</td>
+      <td>{% if kind == 'zone' %}<a href="/zones/{{ tid }}"><strong>{{ names.get((kind, tid), tid) }}</strong></a>
+          {% else %}<strong>{{ names.get((kind, tid), tid) }}</strong> <span class="muted">{{ kind }}</span>{% endif %}
+          {% if o.reason %}<div class="muted" style="font-size:13px">{{ o.reason }}</div>{% endif %}</td>
+      <td>{{ ui.chip(o.mode) }}{% if o.mode == 'custom' %} <span class="num"><span class="heat">{{ o.heat | deg }}°</span> – <span class="cool">{{ o.cool | deg }}°</span></span>{% endif %}</td>
+      <td class="num">{{ o.ends_at | when }}</td>
+      <td class="hide-sm muted">{{ o.created_by.split('@')[0] }}</td>
+      <td class="right">{% if o.id in cancellable %}<form class="inline" method="post" action="/overrides/{{ o.id }}/cancel"><button class="secondary small">End now</button></form>{% endif %}</td>
     </tr>
-  {% else %}<tr><td colspan="6" class="muted">No active overrides.</td></tr>{% endfor %}
+  {% endfor %}
   </tbody>
-</table>
+</table></div>
+{% else %}
+<div class="panel empty"><strong>No overrides right now</strong>Every room is following its schedule. Use <a href="/">Rooms</a> to change one.</div>
+{% endif %}
 {% endblock %}

@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app import alerts, api, gcal, reconciler
@@ -47,7 +47,36 @@ def _fmt_local(dt: datetime | None, tz: str | None = None) -> str:
     return local.strftime("%a %-I:%M %p")
 
 
+def _fmt_when(dt: datetime | None, tz: str | None = None) -> str:
+    """'3:15 PM' today, 'tomorrow 8 AM', else 'Fri 8 AM'. For people, not logs."""
+    if not dt:
+        return "—"
+    zone = ZoneInfo(tz or get_settings().default_timezone)
+    local, today = aware(dt).astimezone(zone), datetime.now(zone).date()
+    clock = local.strftime("%-I:%M %p").replace(":00 ", " ")
+    if local.date() == today:
+        return clock
+    if local.date() == today + timedelta(days=1):
+        return f"tomorrow {clock}"
+    return f"{local:%a} {clock}"
+
+
+def _fmt_deg(v: float | None) -> str:
+    return "—" if v is None else f"{v:.1f}".removesuffix(".0")
+
+
+INTENTS = {"occupied": "In use", "unoccupied": "Empty", "off": "Off", "custom": "Custom"}
+SOURCES = {"override": "Override", "calendar": "Booking", "schedule": "Weekly schedule",
+           "default": "No schedule"}
+
 templates.env.filters["local"] = _fmt_local
+templates.env.filters["when"] = _fmt_when
+templates.env.filters["deg"] = _fmt_deg
+templates.env.globals["INTENTS"] = INTENTS
+templates.env.globals["SOURCES"] = SOURCES
+# Cache-bust the stylesheet: browsers keep /static/app.css otherwise.
+templates.env.globals["css_version"] = int(
+    (Path(__file__).parent / "static" / "app.css").stat().st_mtime)
 templates.env.globals["settings"] = get_settings
 templates.env.globals["open_alerts"] = alerts.open_alerts
 
@@ -61,29 +90,64 @@ def _back(request: Request, fallback: str = "/") -> RedirectResponse:
 
 
 @router.get("/", response_class=HTMLResponse)
-def overview(request: Request, db: Session = Depends(get_db),
-             p: Principal = Depends(current_principal)):
+def rooms(request: Request, campus: int | None = None, db: Session = Depends(get_db),
+          p: Principal = Depends(current_principal)):
+    """The everyday screen: every room, what it's doing, and one-tap changes."""
+    campuses = db.scalars(select(Campus).order_by(Campus.name).options(
+        selectinload(Campus.zones).selectinload(Zone.thermostats))).all()
+    shown = [c for c in campuses if campus is None or c.id == campus]
+    now = utcnow()
+    status = {z.id: api.zone_status(db, z, now) for c in shown for z in c.zones if z.enabled}
+    groups = db.scalars(select(ZoneGroup).order_by(ZoneGroup.name)
+                        .options(selectinload(ZoneGroup.zones))).all()
+    groups = [g for g in groups if g.zones and (campus is None or any(
+        z.campus_id == campus for z in g.zones))]
+    unassigned = db.scalar(select(func.count()).select_from(Thermostat)
+                           .where(Thermostat.zone_id.is_(None)))
+    return render(request, "rooms.html", p, campuses=campuses, shown=shown, status=status,
+                  groups=groups, campus=campus, unassigned=unassigned)
+
+
+@router.get("/setup", response_class=HTMLResponse)
+def setup_page(request: Request, db: Session = Depends(get_db),
+               p: Principal = Depends(current_principal)):
     campuses = db.scalars(select(Campus).order_by(Campus.name).options(
         selectinload(Campus.zones).selectinload(Zone.thermostats))).all()
     unassigned = db.scalars(select(Thermostat).where(Thermostat.zone_id.is_(None))
                             .order_by(Thermostat.name)).all()
-    plan = {row["thermostat_id"]: row for row in reconciler.plan()}
-    groups = db.scalars(select(ZoneGroup).order_by(ZoneGroup.name)
-                        .options(selectinload(ZoneGroup.zones))).all()
-    touchable = [c.id for c in campuses if p.may_touch_campus(c.id)]
-    return render(request, "overview.html", p, campuses=campuses, unassigned=unassigned,
-                  plan=plan, groups=groups, touchable=touchable)
+    return render(request, "setup.html", p, campuses=campuses, unassigned=unassigned)
 
 
 @router.get("/zones/new", response_class=HTMLResponse)
 def new_zone_page(request: Request, db: Session = Depends(get_db),
                   p: Principal = Depends(current_principal)):
-    return zone_page(request, None, db, p)
+    return zone_edit_page(request, None, db, p)
 
 
 @router.get("/zones/{zone_id}", response_class=HTMLResponse)
-def zone_page(request: Request, zone_id: int | None, db: Session = Depends(get_db),
+def room_page(request: Request, zone_id: int, db: Session = Depends(get_db),
               p: Principal = Depends(current_principal)):
+    zone = db.get(Zone, zone_id)
+    if not zone:
+        raise HTTPException(404)
+    now = utcnow()
+    events = []
+    if zone.calendar_id:
+        events = db.scalars(select(CalendarEvent).where(
+            CalendarEvent.calendar_id == zone.calendar_id,
+            CalendarEvent.ends_at > now).order_by(CalendarEvent.starts_at).limit(8)).all()
+    blocks = db.scalars(select(ScheduleBlock).where(ScheduleBlock.zone_id == zone.id)
+                        .order_by(ScheduleBlock.start)).all()
+    return render(request, "room.html", p, zone=zone, s=api.zone_status(db, zone, now),
+                  preview=_preview(db, zone, now, hours=36), events=events,
+                  blocks=[api.block_dict(b) for b in blocks],
+                  thermostats=sorted(zone.thermostats, key=lambda t: t.name),
+                  sync=db.get(CalendarSyncState, zone.calendar_id) if zone.calendar_id else None)
+
+
+@router.get("/zones/{zone_id}/edit", response_class=HTMLResponse)
+def zone_edit_page(request: Request, zone_id: int | None, db: Session = Depends(get_db),
+                   p: Principal = Depends(current_principal)):
     zone = db.get(Zone, zone_id) if zone_id else None
     if zone_id and not zone:
         raise HTTPException(404)
@@ -93,26 +157,16 @@ def zone_page(request: Request, zone_id: int | None, db: Session = Depends(get_d
             resources = gcal.list_resources()
         except Exception as err:  # show the page anyway; the id can be typed in
             resource_error = str(err)
-    events, preview = [], []
-    if zone:
-        now = utcnow()
-        if zone.calendar_id:
-            events = db.scalars(select(CalendarEvent).where(
-                CalendarEvent.calendar_id == zone.calendar_id,
-                CalendarEvent.ends_at > now).order_by(CalendarEvent.starts_at).limit(15)).all()
-        preview = _preview(db, zone, now)
     thermostats = db.scalars(select(Thermostat).where(
         (Thermostat.zone_id.is_(None)) | (Thermostat.zone_id == zone_id))
         .order_by(Thermostat.name)).all()
     blocks = (db.scalars(select(ScheduleBlock).where(ScheduleBlock.zone_id == zone.id)
                          .order_by(ScheduleBlock.start)).all() if zone else [])
     editable = p.can_write and (zone is None or p.may_touch_campus(zone.campus_id))
-    return render(request, "zone.html", p, zone=zone,
+    return render(request, "zone_edit.html", p, zone=zone,
                   campuses=db.scalars(select(Campus).order_by(Campus.name)).all(),
                   thermostats=thermostats, resources=resources, resource_error=resource_error,
-                  events=events, preview=preview, blocks=[api.block_dict(b) for b in blocks],
-                  editable=editable,
-                  sync=db.get(CalendarSyncState, zone.calendar_id) if zone and zone.calendar_id else None)
+                  blocks=[api.block_dict(b) for b in blocks], editable=editable)
 
 
 def _preview(db: Session, zone: Zone, now: datetime, hours: int = 48) -> list[dict]:
@@ -153,21 +207,21 @@ async def save_zone(request: Request, zone_id: int | None = None, db: Session = 
         api.update_zone(zone_id, body, db, p)
     else:
         zone_id = api.create_zone(body, db, p)["id"]
-    return RedirectResponse(f"/zones/{zone_id}", status_code=303)
+    return RedirectResponse(f"/zones/{zone_id}/edit?saved=1", status_code=303)
 
 
 @router.post("/campuses")
 def add_campus(name: str = Form(...), timezone: str = Form("America/Chicago"),
                db: Session = Depends(get_db), p: Principal = Depends(require_admin)):
     api.create_campus(api.CampusIn(name=name, timezone=timezone), db, p)
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/setup", status_code=303)
 
 
 @router.post("/zones/{zone_id}/delete")
 def delete_zone(zone_id: int, db: Session = Depends(get_db),
                 p: Principal = Depends(require_write)):
     api.delete_zone(zone_id, db, p)
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/setup", status_code=303)
 
 
 def _campuses_with_zones(db: Session):

@@ -1,8 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Audit log{% endblock %}
+{% set section = 'setup' %}{% set sub = 'audit' %}
+{% block title %}Activity{% endblock %}
 {% block content %}
-<h1>Audit log</h1>
-<table>
+<h1>Activity</h1>
+<p class="muted">Everything people and the scheduler changed, newest first.</p>
+<div class="tablewrap"><table>
   <thead><tr><th>When</th><th>Who</th><th>Source</th><th>Action</th><th>Target</th><th class="hide-sm">Detail</th></tr></thead>
   <tbody>
   {% for a in rows %}
@@ -14,5 +16,5 @@
     </tr>
   {% else %}<tr><td colspan="6" class="muted">Nothing yet.</td></tr>{% endfor %}
   </tbody>
-</table>
+</table></div>
 {% endblock %}

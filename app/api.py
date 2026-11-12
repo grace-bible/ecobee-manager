@@ -19,6 +19,7 @@ from app.auth import (
     require_admin,
     require_write,
 )
+from app.config import get_settings
 from app.db import get_db
 from app.ecobee.backend import AuthRequired, BackendError
 from app.models import (
@@ -34,6 +35,7 @@ from app.models import (
     ZoneGroup,
     utcnow,
 )
+from app.resolver import next_change, resolve
 from app.services import get_backend, record_auth_error
 
 router = APIRouter(prefix="/api/v1")
@@ -190,6 +192,58 @@ def zone_dict(z: Zone) -> dict:
         "min_setpoint", "max_setpoint")} | {"thermostat_ids": [t.id for t in z.thermostats]}
 
 
+def _running(equipment: list[str]) -> str:
+    """ecobee equipmentStatus ('heatPump,fan', 'compCool1', …) → heating/cooling/fan/idle."""
+    blob = ",".join(e for e in equipment if e).lower()
+    if "heat" in blob:
+        return "heating"
+    if "cool" in blob:
+        return "cooling"
+    if "fan" in blob:
+        return "fan"
+    return "idle"
+
+
+def zone_status(db: Session, z: Zone, now: datetime | None = None,
+                look_ahead: timedelta = timedelta(hours=24)) -> dict:
+    """What a zone is doing now and what it does next, worded for whoever is in the room.
+    Zone-level only: per-thermostat overrides show on the thermostat, not here."""
+    now = now or utcnow()
+    cfg = reconciler.zone_cfg(z)
+    deadband = get_settings().min_deadband_f
+    zone_ovs, _, events, blocks = reconciler.gather_inputs(db, z, now, look_ahead)
+    d = resolve(cfg, now, zone_ovs, events, blocks, deadband)
+    until = next_change(cfg, now, zone_ovs, events, blocks, horizon=look_ahead)
+    nxt = (resolve(cfg, until, zone_ovs, events, blocks, deadband)
+           if until < now + look_ahead else None)
+
+    override = event = None
+    kind, _, ref_id = (d.ref or "").partition(":")
+    if kind == "override":
+        o = db.get(Override, int(ref_id))
+        if o:
+            override = {"id": o.id, "scope": "zone" if o.zone_id == z.id else "group",
+                        "group": (g.name if o.group_id and (g := db.get(ZoneGroup, o.group_id))
+                                  else None),
+                        "created_by": o.created_by, "reason": o.reason, "ends_at": o.ends_at}
+    elif kind == "event":
+        event = next((e.title for e in events if e.id == ref_id), None) or "a booking"
+
+    online = [t for t in z.thermostats if t.connected]
+    temps = [t.current_temp for t in online if t.current_temp is not None]
+    return {
+        "zone_id": z.id, "zone": z.name, "campus_id": z.campus_id, "enabled": z.enabled,
+        "temp": round(sum(temps) / len(temps), 1) if temps else None,
+        "humidity": next((t.humidity for t in online if t.humidity is not None), None),
+        "running": _running([t.equipment_running or "" for t in online]),
+        "thermostats": len(z.thermostats), "online": len(online),
+        "heat": d.heat, "cool": d.cool, "intent": d.intent, "source": d.source,
+        "override": override, "event": event, "until": until if nxt else None,
+        "next": {"heat": nxt.heat, "cool": nxt.cool, "intent": nxt.intent,
+                 "source": nxt.source} if nxt else None,
+    }
+
+
 # ---------- reads ----------
 
 @router.get("/me")
@@ -212,6 +266,15 @@ def list_thermostats(db: Session = Depends(get_db), _=Depends(current_principal)
 def list_zones(db: Session = Depends(get_db), _=Depends(current_principal)):
     zs = db.scalars(select(Zone).options(selectinload(Zone.thermostats)).order_by(Zone.name))
     return [zone_dict(z) for z in zs]
+
+
+@router.get("/zones/{zone_id}/status")
+def get_zone_status(zone_id: int, db: Session = Depends(get_db), _=Depends(current_principal)):
+    """What the room is doing now and next (target, why, until when)."""
+    z = db.get(Zone, zone_id)
+    if not z:
+        raise HTTPException(404, "zone not found")
+    return zone_status(db, z)
 
 
 @router.get("/groups")

@@ -1,0 +1,155 @@
+{# Shared pieces for the operator screens. Import with context:
+   {% import "partials/room_ui.html" as ui with context %} #}
+
+{% macro band(heat, cool) -%}
+<span class="band"><span class="heat">{{ heat | deg }}°</span><span class="sep">–</span><span class="cool">{{ cool | deg }}°</span></span>
+{%- endmacro %}
+
+{% macro temp(v) -%}
+{% if v is none %}<span class="temp none">—</span>{% else %}<span class="temp">{{ '%.0f' % v }}<sup>°</sup></span>{% endif %}
+{%- endmacro %}
+
+{% macro chip(intent) -%}
+<span class="chip {{ intent }}">{{ INTENTS.get(intent, intent) }}</span>
+{%- endmacro %}
+
+{# One line on why the room is at this target, and until when. #}
+{% macro why(s, tz) -%}
+  {% if s.override %}
+    <span class="tag-override">{% if s.override.scope == 'group' %}{{ s.override.group or 'Group' }} override{% else %}Override{% endif %}</span>
+    by {{ s.override.created_by.split('@')[0] }}{% if s.override.reason %} · {{ s.override.reason }}{% endif %}
+  {% elif s.source == 'calendar' %}Booked: {{ s.event }}
+  {% elif s.source == 'schedule' %}Weekly schedule
+  {% else %}No schedule right now{% endif %}
+  {% if s.until %} · until {{ s.until | when(tz) }}{% endif %}
+  {% if s.next %}<div class="next">Then {{ INTENTS.get(s.next.intent, s.next.intent) | lower }}, {{ s.next.heat | deg }}–{{ s.next.cool | deg }}°</div>{% endif %}
+{%- endmacro %}
+
+{# One-tap changes for a zone or group. kind: 'zone' | 'group'. #}
+{% macro quick_actions(kind, id, name, s=none, heat=68, cool=72) %}
+<div class="actions">
+  {% if s and s.override and s.override.scope == 'zone' %}
+    <form method="post" action="/overrides/{{ s.override.id }}/cancel">
+      <button class="secondary">Back to schedule</button>
+    </form>
+  {% else %}
+    <form method="post" action="/overrides">
+      <input type="hidden" name="{{ 'group_id' if kind == 'group' else 'zone_ids' }}" value="{{ id }}">
+      <input type="hidden" name="mode" value="occupied"><input type="hidden" name="minutes" value="120">
+      <button class="secondary" title="Comfortable for the next 2 hours">In use · 2h</button>
+    </form>
+    <form method="post" action="/overrides">
+      <input type="hidden" name="{{ 'group_id' if kind == 'group' else 'zone_ids' }}" value="{{ id }}">
+      <input type="hidden" name="mode" value="off"><input type="hidden" name="minutes" value="120">
+      <button class="secondary" title="Widest safe band for the next 2 hours">Off · 2h</button>
+    </form>
+  {% endif %}
+  <button type="button" class="secondary" data-adjust data-kind="{{ kind }}" data-id="{{ id }}"
+          data-name="{{ name }}" data-heat="{{ heat }}" data-cool="{{ cool }}">Adjust…</button>
+</div>
+{% endmacro %}
+
+{% macro room_card(z, s, tz, editable) %}
+<article class="card">
+  <div class="room-top">
+    <div>
+      <a class="room-name" href="/zones/{{ z.id }}">{{ z.name }}</a>
+      <div class="room-meta">
+        {% if s.thermostats == 0 %}No thermostats yet
+        {% elif s.online < s.thermostats %}<span class="offline">{{ s.thermostats - s.online }} of {{ s.thermostats }} offline</span>
+        {% else %}<span class="run {{ s.running }}">{{ s.running | capitalize }}</span>{% if s.humidity is not none %} · {{ s.humidity }}% humidity{% endif %}{% endif %}
+      </div>
+    </div>
+    {{ chip(s.intent) }}
+  </div>
+  <div class="room-mid">
+    {{ temp(s.temp) }}
+    <div class="target"><div class="label">Target</div>{{ band(s.heat, s.cool) }}</div>
+  </div>
+  <div class="why">{{ why(s, tz) }}</div>
+  {% if editable %}{{ quick_actions('zone', z.id, z.name, s, s.heat, s.cool) }}{% endif %}
+</article>
+{% endmacro %}
+
+{# The Adjust dialog: one per page, filled in by the button that opens it. #}
+{% macro adjust_dialog() %}
+<dialog id="adjust" aria-labelledby="adjust-title">
+  <form method="post" action="/overrides" class="dlg">
+    <h2 id="adjust-title">Adjust</h2>
+    <p class="sub" id="adjust-sub">Temporary. The schedule takes over again afterwards.</p>
+    <input type="hidden" name="zone_ids"><input type="hidden" name="group_id">
+    <fieldset>
+      <legend class="muted" style="font-size:13px;font-weight:550;margin-bottom:6px">Set the room to</legend>
+      <div class="seg">
+        {% for v, l in [('occupied','In use'),('unoccupied','Empty'),('off','Off'),('custom','Custom')] %}
+        <label><input type="radio" name="mode" value="{{ v }}" {% if v == 'custom' %}checked{% endif %}><span>{{ l }}</span></label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    <div id="adjust-temps" style="display:flex;flex-direction:column;gap:8px">
+      {% for f, l in [('heat','Heat to'),('cool','Cool to')] %}
+      <div class="stepper">
+        <span class="name {{ f }}">{{ l }}</span>
+        <div class="ctl">
+          <button type="button" class="secondary" data-step="{{ f }}:-1" aria-label="{{ l }} one degree lower">−</button>
+          <output id="adjust-{{ f }}-out" class="{{ f }}">70°</output>
+          <button type="button" class="secondary" data-step="{{ f }}:1" aria-label="{{ l }} one degree higher">+</button>
+        </div>
+        <input type="hidden" name="{{ f }}">
+      </div>
+      {% endfor %}
+    </div>
+    <fieldset>
+      <legend class="muted" style="font-size:13px;font-weight:550;margin-bottom:6px">For</legend>
+      <div class="seg five">
+        {% for m, l in [(60,'1 hr'),(120,'2 hr'),(240,'4 hr'),(480,'8 hr'),(1440,'24 hr')] %}
+        <label><input type="radio" name="minutes" value="{{ m }}" {% if m == 120 %}checked{% endif %}><span>{{ l }}</span></label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    <label>Reason <input name="reason" placeholder="Optional, e.g. Choir rehearsal"></label>
+    <div class="dlg-foot">
+      <button type="button" class="secondary" data-close>Cancel</button>
+      <button type="submit">Apply</button>
+    </div>
+  </form>
+</dialog>
+<script>
+(() => {
+  const dlg = document.getElementById('adjust'), f = dlg.querySelector('form');
+  const temps = {heat: 68, cool: 72}, gap = {{ settings().min_deadband_f }};
+  const show = () => {
+    for (const k of ['heat', 'cool']) {
+      f.elements[k].value = temps[k];
+      document.getElementById(`adjust-${k}-out`).textContent = `${temps[k]}°`;
+    }
+    const custom = f.elements.mode.value === 'custom';
+    document.getElementById('adjust-temps').style.display = custom ? 'flex' : 'none';
+    for (const k of ['heat', 'cool']) f.elements[k].disabled = !custom;
+  };
+  document.addEventListener('click', e => {
+    const b = e.target.closest('[data-adjust]');
+    if (!b) return;
+    const zone = b.dataset.kind === 'zone';
+    f.elements.zone_ids.value = zone ? b.dataset.id : '';
+    f.elements.group_id.value = zone ? '' : b.dataset.id;
+    f.elements.zone_ids.disabled = !zone; f.elements.group_id.disabled = zone;
+    temps.heat = Math.round(+b.dataset.heat || 68); temps.cool = Math.round(+b.dataset.cool || 72);
+    document.getElementById('adjust-title').textContent = b.dataset.name;
+    f.elements.mode.value = 'custom'; show();
+    dlg.showModal();
+  });
+  dlg.addEventListener('click', e => {
+    const s = e.target.closest('[data-step]');
+    if (s) {
+      const [k, d] = s.dataset.step.split(':'); temps[k] += +d;
+      // Keep the heat/cool gap the guardrails will enforce anyway.
+      if (temps.cool - temps.heat < gap) { if (k === 'heat') temps.cool = temps.heat + gap; else temps.heat = temps.cool - gap; }
+      show();
+    }
+    if (e.target.closest('[data-close]') || e.target === dlg) dlg.close();
+  });
+  f.addEventListener('change', show);
+})();
+</script>
+{% endmacro %}

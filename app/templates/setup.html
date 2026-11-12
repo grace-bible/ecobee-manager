@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% set section = 'setup' %}{% set sub = 'zones' %}
+{% block title %}Setup{% endblock %}
+{% block content %}
+<div class="pagehead">
+  <div><h1>Rooms &amp; campuses</h1>
+    <p class="muted" style="margin:0">A room is one or more thermostats that always move together, with its own comfort settings, schedule and room calendar.</p></div>
+  {% if me.can_write %}<a class="button" href="/zones/new">+ New room</a>{% endif %}
+</div>
+
+{% for c in campuses %}
+  <div class="section-head"><h2>{{ c.name }}</h2><span class="muted">{{ c.timezone }}</span></div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Room</th><th>Thermostats</th><th class="hide-sm">Calendar</th><th class="hide-sm">Comfort</th><th></th></tr></thead>
+    <tbody>
+    {% for z in c.zones | sort(attribute='name') %}
+      <tr>
+        <td><a href="/zones/{{ z.id }}"><strong>{{ z.name }}</strong></a>{% if not z.enabled %} <span class="badge">paused</span>{% endif %}</td>
+        <td>{% for t in z.thermostats | sort(attribute='name') %}<span class="dot {{ 'on' if t.connected else 'off' }}"></span>{{ t.name or t.identifier }}{% if not loop.last %}<br>{% endif %}{% else %}<span class="muted">none</span>{% endfor %}</td>
+        <td class="hide-sm muted">{{ z.calendar_name or '—' }}</td>
+        <td class="hide-sm num"><span class="heat">{{ z.occupied_heat | deg }}°</span>–<span class="cool">{{ z.occupied_cool | deg }}°</span> <span class="muted">in use</span></td>
+        <td class="right">{% if me.can_write and me.may_touch_campus(c.id) %}<a class="button secondary small" href="/zones/{{ z.id }}/edit">Edit</a>{% endif %}</td>
+      </tr>
+    {% else %}<tr><td colspan="5" class="muted">No rooms on this campus yet.</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+{% else %}
+  <div class="panel empty"><strong>Start with a campus</strong>Add one below, then create rooms and put thermostats in them.</div>
+{% endfor %}
+
+{% if unassigned %}
+<div class="section-head"><h2>Not in a room</h2><span class="muted">The app leaves these alone</span></div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Thermostat</th><th class="right">Now</th><th class="right">Set at the wall</th><th class="hide-sm">ecobee ID</th></tr></thead>
+  <tbody>{% for t in unassigned %}
+    <tr><td><span class="dot {{ 'on' if t.connected else 'off' }}"></span>{{ t.name or '(unnamed)' }}</td>
+      <td class="num right">{{ t.current_temp | deg }}°</td>
+      <td class="num right"><span class="heat">{{ t.heat_setpoint | deg }}°</span> – <span class="cool">{{ t.cool_setpoint | deg }}°</span></td>
+      <td class="hide-sm muted num">{{ t.identifier }}</td></tr>
+  {% endfor %}</tbody>
+</table></div>
+{% endif %}
+
+{% if me.role == 'admin' %}
+<h2>Add a campus</h2>
+<form class="panel bulk" method="post" action="/campuses">
+  <label>Name <input name="name" required placeholder="e.g. Midtown"></label>
+  <label>Timezone <input name="timezone" value="{{ settings().default_timezone }}"></label>
+  <button>Add campus</button>
+</form>
+{% endif %}
+{% endblock %}

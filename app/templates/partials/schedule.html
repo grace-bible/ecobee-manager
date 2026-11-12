@@ -1,7 +1,7 @@
 {# Weekly schedule blocks for one zone or group.
    Needs: blocks, owner_field ('zone_id'|'group_id'), owner_id, editable #}
 {% set days = [('Mon',1),('Tue',2),('Wed',4),('Thu',8),('Fri',16),('Sat',32),('Sun',64)] %}
-<table>
+<div class="tablewrap"><table>
   <thead><tr><th>Days</th><th>Time</th><th>Mode</th><th>Label</th><th></th></tr></thead>
   <tbody>
   {% for b in blocks %}
@@ -14,7 +14,7 @@
     </tr>
   {% else %}<tr><td colspan="5" class="muted">No weekly blocks.{% if owner_field == 'zone_id' %} Without one, the zone is unoccupied unless a group schedule, the calendar or an override says otherwise.{% endif %}</td></tr>{% endfor %}
   </tbody>
-</table>
+</table></div>
 {% if editable %}
 <form method="post" action="/schedule-blocks" class="panel bulk block-form">
   <input type="hidden" name="{{ owner_field }}" value="{{ owner_id }}">

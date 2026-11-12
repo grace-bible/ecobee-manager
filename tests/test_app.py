@@ -38,7 +38,8 @@ def test_flow():
         assert state[kid_ids[0]].heat_setpoint == 60
 
         # Pages render
-        for path in ["/", f"/zones/{zone}", "/zones/new", "/overrides", "/audit", "/settings"]:
+        for path in ["/", f"/zones/{zone}", f"/zones/{zone}/edit", "/zones/new", "/setup",
+                     "/overrides", "/audit", "/settings"]:
             assert c.get(path).status_code == 200, path
         audit = c.get("/api/v1/audit").json()
         assert any(a["action"] == "set_hold" for a in audit)
@@ -139,8 +140,10 @@ def test_campus_manager_scoping(monkeypatch):
             "zone_id": z_other, "weekdays": 1, "start": "08:00", "end": "09:00"}).status_code == 403
         assert c.get("/api/v1/users").status_code == 403
         # UI hides what they can't change
-        assert "Save zone" not in c.get(f"/zones/{z_other}").text
-        assert "Save zone" in c.get(f"/zones/{z_mine.json()['id']}").text
+        assert "Save room" not in c.get(f"/zones/{z_other}/edit").text
+        assert "Save room" in c.get(f"/zones/{z_mine.json()['id']}/edit").text
+        assert "In use · 2h" not in c.get(f"/zones/{z_other}").text  # no quick actions
+        assert "In use · 2h" in c.get(f"/zones/{z_mine.json()['id']}").text
         assert f"/overrides/{o}/cancel" not in c.get("/overrides").text
 
 

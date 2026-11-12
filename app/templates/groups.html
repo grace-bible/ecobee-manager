@@ -1,9 +1,10 @@
 {% extends "base.html" %}
+{% set section = 'setup' %}{% set sub = 'groups' %}
 {% block title %}Groups{% endblock %}
 {% block content %}
 <h1>Groups</h1>
-<p class="muted">A group is any set of zones — a building, a wing, "everything at Midtown". Override a whole group from the Overview, or give it a weekly schedule that its zones follow unless they have their own.</p>
-<table>
+<p class="muted">A group is any set of zones — a building, a wing, "everything at Midtown". Change a whole group at once from Rooms, or give it a weekly schedule that its zones follow unless they have their own.</p>
+<div class="tablewrap"><table>
   <thead><tr><th>Group</th><th>Zones</th><th class="hide-sm">Description</th></tr></thead>
   <tbody>
   {% for g in groups %}
@@ -12,7 +13,7 @@
         <td class="hide-sm muted">{{ g.description or '' }}</td></tr>
   {% else %}<tr><td colspan="3" class="muted">No groups yet.</td></tr>{% endfor %}
   </tbody>
-</table>
+</table></div>
 
 {% if me.can_write %}
 <h2>New group</h2>

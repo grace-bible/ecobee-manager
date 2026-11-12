@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% set section = 'rooms' %}
+{% import "partials/room_ui.html" as ui with context %}
+{% block title %}Rooms{% endblock %}
+{% block content %}
+<div class="pagehead">
+  <div>
+    <h1>Rooms</h1>
+  </div>
+  {% if campuses | length > 1 %}
+  <nav class="pills" aria-label="Campus">
+    <a href="/" {% if campus is none %}aria-current="true"{% endif %}>All campuses</a>
+    {% for c in campuses %}<a href="/?campus={{ c.id }}" {% if campus == c.id %}aria-current="true"{% endif %}>{{ c.name }}</a>{% endfor %}
+  </nav>
+  {% endif %}
+</div>
+
+<div hx-get="{{ request.url.path }}{% if campus %}?campus={{ campus }}{% endif %}" hx-select="#live" hx-target="#live"
+     hx-swap="outerHTML" hx-trigger="every 30s [!document.querySelector('dialog[open]')]"></div>
+<div id="live">
+{% set any_rooms = namespace(v=false) %}
+{% for c in shown %}
+  {% set zones = c.zones | selectattr('enabled') | sort(attribute='name') | list %}
+  {% if zones %}{% set any_rooms.v = true %}
+  {% if shown | length > 1 or campuses | length > 1 %}<div class="section-head"><h2>{{ c.name }}</h2><span class="muted">{{ zones | length }} room{{ 's' if zones | length != 1 }}</span></div>{% endif %}
+  <div class="rooms">
+    {% for z in zones %}{{ ui.room_card(z, status[z.id], c.timezone, me.can_write and me.may_touch_campus(c.id)) }}{% endfor %}
+  </div>
+  {% endif %}
+{% endfor %}
+
+{% if not any_rooms.v %}
+  <div class="panel empty">
+    <strong>No rooms to show yet</strong>
+    {% if me.can_write %}Rooms appear here once thermostats are grouped into rooms in <a href="/setup">Setup</a>.
+    {% else %}Ask an admin to set up rooms for your campus.{% endif %}
+  </div>
+{% endif %}
+
+{% if groups %}
+  <div class="section-head"><h2>Buildings &amp; groups</h2><span class="muted">Change several rooms at once</span></div>
+  <div class="rooms">
+  {% for g in groups %}
+    {% set touch = me.can_write and (g.zones | rejectattr('campus_id', 'in', me.campus_ids) | list | length == 0 or me.role == 'admin') %}
+    <article class="card">
+      <div class="room-top">
+        <div><span class="room-name">{{ g.name }}</span>
+          <div class="room-meta">{{ g.zones | length }} room{{ 's' if g.zones | length != 1 }}: {{ g.zones | map(attribute='name') | sort | join(', ') }}</div></div>
+      </div>
+      {% if touch %}{{ ui.quick_actions('group', g.id, g.name) }}{% endif %}
+    </article>
+  {% endfor %}
+  </div>
+{% endif %}
+
+{% if unassigned and me.can_write %}
+  <p class="muted" style="margin-top:28px">{{ unassigned }} thermostat{{ 's are' if unassigned != 1 else ' is' }} not in a room yet, so the app doesn't control {{ 'them' if unassigned != 1 else 'it' }}. <a href="/setup">Set up rooms →</a></p>
+{% endif %}
+</div>
+
+{{ ui.adjust_dialog() }}
+{% endblock %}

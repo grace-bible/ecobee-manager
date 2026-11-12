@@ -1,7 +1,8 @@
 {% extends "base.html" %}
-{% block title %}Settings{% endblock %}
+{% set section = 'setup' %}{% set sub = 'system' %}
+{% block title %}System{% endblock %}
 {% block content %}
-<h1>Settings</h1>
+<h1>System</h1>
 {% if message %}<div class="msg">{{ message }}</div>{% endif %}
 
 <h2>ecobee account</h2>

@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% set section = 'rooms' %}
+{% import "partials/room_ui.html" as ui with context %}
+{% block title %}{{ zone.name }}{% endblock %}
+{% set tz = zone.campus.timezone if zone.campus else none %}
+{% set editable = me.can_write and me.may_touch_campus(zone.campus_id) %}
+{% block content %}
+<div class="pagehead">
+  <div>
+    <div class="crumbs"><a href="/?campus={{ zone.campus_id }}">{{ zone.campus.name if zone.campus else 'Rooms' }}</a></div>
+    <h1>{{ zone.name }}</h1>
+  </div>
+  {% if editable %}<a class="button secondary small" href="/zones/{{ zone.id }}/edit">Room settings</a>{% endif %}
+</div>
+
+{% if not zone.enabled %}<div class="msg warn">This room is paused: the app isn't controlling its thermostats.</div>{% endif %}
+
+<section class="card hero">
+  <div>{{ ui.temp(s.temp) }}<div class="muted" style="margin-top:6px;font-size:14px">Inside now</div></div>
+  <div class="hero-body">
+    <div class="hero-line">{{ ui.chip(s.intent) }} <span class="muted">Target</span> {{ ui.band(s.heat, s.cool) }}</div>
+    <div class="why" style="border:0;padding:0">{{ ui.why(s, tz) }}</div>
+    <div class="facts">
+      <span>Equipment <strong class="run {{ s.running }}">{{ s.running | capitalize }}</strong></span>
+      {% if s.humidity is not none %}<span>Humidity <strong>{{ s.humidity }}%</strong></span>{% endif %}
+      <span>Thermostats <strong>{{ s.online }}/{{ s.thermostats }} online</strong></span>
+    </div>
+    {% if editable %}{{ ui.quick_actions('zone', zone.id, zone.name, s, s.heat, s.cool) }}{% endif %}
+  </div>
+</section>
+
+<h2>Coming up</h2>
+<ol class="agenda">
+  {% for p in preview %}
+  <li class="{{ 'now' if loop.first }}">
+    <span class="when">{% if loop.first %}Now{% else %}{{ p.start | when(tz) }}{% endif %}{% if loop.last and not loop.first %} onward{% else %} – {{ p.end | when(tz) }}{% endif %}</span>
+    <span>{{ ui.chip(p.intent) }}</span>
+    <span class="src"><span class="num"><span class="heat">{{ p.heat | deg }}°</span> – <span class="cool">{{ p.cool | deg }}°</span></span>
+      <span class="muted">· {{ SOURCES.get(p.source, p.source) }}</span></span>
+  </li>
+  {% endfor %}
+</ol>
+
+<h2>Thermostats</h2>
+<div class="tablewrap"><table>
+  <thead><tr><th>Thermostat</th><th class="right">Now</th><th class="right">Set at the wall</th><th class="hide-sm">Equipment</th><th class="hide-sm">Mode</th></tr></thead>
+  <tbody>
+  {% for t in thermostats %}
+    <tr>
+      <td><span class="dot {{ 'on' if t.connected else 'off' }}" aria-label="{{ 'online' if t.connected else 'offline' }}"></span>{{ t.name or t.identifier }}{% if not t.connected %} <span class="offline">offline</span>{% endif %}</td>
+      <td class="num right">{{ t.current_temp | deg }}°</td>
+      <td class="num right"><span class="heat">{{ t.heat_setpoint | deg }}°</span> – <span class="cool">{{ t.cool_setpoint | deg }}°</span></td>
+      <td class="hide-sm muted">{{ (t.equipment_running or 'idle') | replace(',', ', ') }}</td>
+      <td class="hide-sm muted">{{ t.hvac_mode or '—' }}</td>
+    </tr>
+  {% else %}<tr><td colspan="5" class="muted">No thermostats in this room yet.</td></tr>{% endfor %}
+  </tbody>
+</table></div>
+
+<div class="split">
+  <div>
+    <h2>Weekly schedule</h2>
+    {% set days = [('Mon',1),('Tue',2),('Wed',4),('Thu',8),('Fri',16),('Sat',32),('Sun',64)] %}
+    <div class="tablewrap"><table><tbody>
+      {% for b in blocks %}
+      <tr><td>{% for name, bit in days %}{% if b.weekdays|int // bit % 2 %}<span class="day">{{ name }}</span>{% endif %}{% endfor %}</td>
+          <td class="num">{{ b.start }}–{{ b.end }}</td><td>{{ ui.chip(b.mode) }}</td><td class="muted hide-sm">{{ b.label or '' }}</td></tr>
+      {% else %}<tr><td class="muted">No weekly schedule. The room stays empty unless it's booked or someone adjusts it.</td></tr>{% endfor %}
+    </tbody></table></div>
+    {% if editable %}<p><a href="/zones/{{ zone.id }}/edit#schedule">Edit schedule →</a></p>{% endif %}
+  </div>
+  <div>
+    <h2>Bookings</h2>
+    {% if zone.calendar_id %}
+    <div class="tablewrap"><table><tbody>
+      {% for e in events %}
+      <tr><td class="num">{{ e.starts_at | when(tz) }} – {{ e.ends_at | when(tz) }}</td><td>{{ e.title or '(no title)' }}</td></tr>
+      {% else %}<tr><td class="muted">Nothing booked in the next {{ settings().calendar_window_days }} days.</td></tr>{% endfor %}
+    </tbody></table></div>
+    <p class="muted" style="font-size:13px">From {{ zone.calendar_name or zone.calendar_id }}{% if sync and sync.last_success %}, synced {{ sync.last_success | when(tz) }}{% endif %}.
+      Starts heating or cooling {{ zone.lead_minutes }} min before a booking.</p>
+    {% else %}
+    <div class="panel muted">This room isn't linked to a room calendar{% if editable %}. <a href="/zones/{{ zone.id }}/edit">Link one</a> so bookings warm or cool it automatically{% endif %}.</div>
+    {% endif %}
+  </div>
+</div>
+
+{{ ui.adjust_dialog() }}
+{% endblock %}

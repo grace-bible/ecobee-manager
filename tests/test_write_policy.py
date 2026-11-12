@@ -55,3 +55,30 @@ def test_failed_fetch_is_retried_on_next_poll(monkeypatch):
     assert "error" in poller.poll_once()
     monkeypatch.undo()
     assert poller.poll_once()["fetched"] == 6
+
+
+def test_zone_status_explains_target_and_override():
+    """The operator view: what the room is doing, why, until when, and what comes next."""
+    with TestClient(app) as c:
+        poller.poll_once()
+        therms = {t["name"]: t for t in c.get("/api/v1/thermostats").json()}
+        south = therms["Worship Center South"]
+        campus = c.post("/api/v1/campuses", json={"name": "Status"}).json()["id"]
+        zone = c.post("/api/v1/zones", json={
+            "name": "Worship South", "campus_id": campus,
+            "thermostat_ids": [south["id"]]}).json()["id"]
+
+        s = c.get(f"/api/v1/zones/{zone}/status").json()
+        assert (s["intent"], s["source"]) == ("unoccupied", "default")
+        assert (s["heat"], s["cool"]) == (60, 82) and s["override"] is None
+        assert s["thermostats"] == 1 and s["running"] in ("heating", "cooling", "fan", "idle")
+
+        o = c.post("/api/v1/overrides", json={"target": "zone", "target_id": zone,
+                                              "mode": "occupied", "minutes": 30,
+                                              "reason": "choir"}).json()["id"]
+        s = c.get(f"/api/v1/zones/{zone}/status").json()
+        assert (s["intent"], s["source"]) == ("occupied", "override")
+        assert s["override"]["id"] == o and s["override"]["reason"] == "choir"
+        assert s["next"]["intent"] == "unoccupied" and s["until"]
+        assert f"/overrides/{o}/cancel" in c.get(f"/zones/{zone}").text  # "Back to schedule"
+        assert c.get("/api/v1/zones/99999/status").status_code == 404

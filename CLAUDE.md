@@ -10,7 +10,7 @@ Full design: `docs/SPEC.md` — read it before changing behavior.
 
 ```bash
 python -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
-pytest -q                      # 44 tests, ~4 s
+pytest -q                      # 45 tests, ~4 s
 ruff check app tests           # must stay clean
 # Local run with 6 simulated thermostats (nothing real touched):
 ECOBEE_BACKEND=fake DEV_AUTH_EMAIL=you@example.org \
@@ -42,8 +42,9 @@ ECOBEE_BACKEND=fake DEV_AUTH_EMAIL=you@example.org \
 
 ## Rules that must not break
 
-- **Every write is a self-expiring `dateTime` hold** ending at the resolver's next change,
-  capped at `HOLD_HORIZON_MINUTES` (240). Never write `hvacMode`, programs or comfort
+- **Every write is a self-expiring `dateTime` hold** ending `HOLD_OVERLAP` (5 min) after the
+  resolver's next change (so there's no gap before the next reconcile), capped at
+  `HOLD_HORIZON_MINUTES` (240). Never write `hvacMode`, programs or comfort
   settings: if the app dies, thermostats must fall back to their own program within hours.
   "Off" = widest band the zone's guardrails allow.
 - **Only `app/ecobee/backend.py` may import `pyecobee`.** The login is unofficial (ecobee's

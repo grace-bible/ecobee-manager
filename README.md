@@ -13,7 +13,7 @@ spaces. One container + Postgres; web UI and REST API; zones follow Google Works
 
 - Each **zone** (a room, one or more thermostats) resolves a target every minute:
   override → room-calendar booking (with lead/tail) → weekly schedule → unoccupied default.
-- Targets are sent as **timed holds** that end at the next change (≤ 4 h). If this app
+- Targets are sent as **timed holds** that end just after the next change (≤ 4 h). If this app
   stops, holds expire and thermostats fall back to their own on-device program, so set
   each thermostat's program to a safe unoccupied setback once, by hand.
 - "Off" means the widest band the zone's guardrails allow, not `hvacMode=off`, so it

@@ -64,9 +64,15 @@ Done: everything in v0.1 plus Alembic migrations, schedule-block editor (zone + 
 group pages, campus-manager scoping in UI and API (incl. override cancel), users/roles in
 Settings, Google Chat alerts, Komodo/cloudflared deploy + CI image publishing.
 
+Spike passed on the real ecobee account (2026-11-12): web login + TOTP, summary/full
+fetch, and a 66/78 dateTime hold on GYM 303 that showed the right end time and expired
+back to the thermostat's own program on its own. The account has only 5 thermostats
+(all gym, 3 offline; one unnamed with no timezone).
+
 Still open:
-1. **Spike against the real account** with `python -m app.spike` — nothing has touched real
-   ecobee or Google yet.
+1. **Rest of the real-account checks:** `spike resume`, token refresh after ≥ 1 h, then the
+   app with `ECOBEE_BACKEND=cloud` + `DRY_RUN=true` on one zone. Google (domain-wide
+   delegation, resource calendars) hasn't been touched yet.
 2. Later: HomeKit local backend behind `ThermostatBackend`, MCP server over `/api/v1`.
 
 ## Conventions

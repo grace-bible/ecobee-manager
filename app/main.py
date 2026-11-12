@@ -41,10 +41,15 @@ async def html_errors(request: Request, exc: StarletteHTTPException):
         return await http_exception_handler(request, exc)
     from html import escape
     detail = escape(str(exc.detail))
-    body = (f"<!doctype html><meta name=viewport content='width=device-width'>"
-            f"<link rel=stylesheet href=/static/app.css><main><h1>{exc.status_code}</h1>"
-            f"<div class=msg>{detail}</div><p><a href='javascript:history.back()'>← Back</a>"
-            f" · <a href='/'>Overview</a></p></main>")
+    title = {401: "You need to sign in", 403: "You can't change this",
+             404: "That page doesn't exist"}.get(exc.status_code, "That didn't work")
+    body = (f"<!doctype html><html lang=en><meta charset=utf-8>"
+            f"<meta name=viewport content='width=device-width, initial-scale=1'>"
+            f"<title>{title}</title><link rel=stylesheet href=/static/app.css>"
+            f"<main class=error-page><h1>{title}</h1>"
+            f"<div class='msg error' role=alert>{detail[:1].upper()}{detail[1:]}</div>"
+            f"<p><a href='javascript:history.back()'>← Go back and try again</a>"
+            f" · <a href='/'>Rooms</a></p></main></html>")
     return HTMLResponse(body, status_code=exc.status_code, headers=exc.headers)
 
 

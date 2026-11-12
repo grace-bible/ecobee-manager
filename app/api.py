@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, time, timedelta
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
@@ -57,8 +58,20 @@ Mode = Literal["occupied", "unoccupied", "off", "custom"]
 # ---------- schemas ----------
 
 class CampusIn(BaseModel):
-    name: str
+    name: str = Field(..., min_length=1, max_length=100)
     timezone: str = "America/Chicago"
+
+    @model_validator(mode="after")
+    def _check(self):
+        try:
+            ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, ValueError) as err:
+            raise ValueError(f"unknown timezone {self.timezone!r}") from err
+        return self
+
+
+class ThermostatZoneIn(BaseModel):
+    zone_id: int | None
 
 
 class BuildingIn(BaseModel):
@@ -342,11 +355,13 @@ def room_insights(z: Zone, now: datetime | None = None, days: int = 7) -> dict:
         "time_to_target_summary": time_to_target_summary(ws),
         # Hourly bars for a day; daily bars for longer ranges.
         "runtime_step": "hour" if days <= 1 else "day",
-        "runtime": ([{"start": t, "label": t.strftime("%-I%p").lower()[:-1], "heat_h": h,
-                      "cool_h": c} for t, h, c in hourly_runtime(pts, tz)] if days <= 1 else
+        # Labels are sparse on purpose: every 6 h, every day up to a week, then Mondays.
+        "runtime": ([{"start": t, "label": t.strftime("%-I%p").lower()[:-1]
+                      if t.hour % 6 == 0 else "", "heat_h": h, "cool_h": c}
+                     for t, h, c in hourly_runtime(pts, tz)] if days <= 1 else
                     [{"start": d, "label": d.strftime("%a")[:2] if days <= 7
-                      else d.strftime("%-d"), "heat_h": h, "cool_h": c}
-                     for d, h, c in daily_runtime(pts, tz)]),
+                      else (d.strftime("%b %-d") if d.weekday() == 0 else ""),
+                      "heat_h": h, "cool_h": c} for d, h, c in daily_runtime(pts, tz)]),
         "runtime_total": {"heat_h": round(sum(p.heat_s for p in pts) / 3600, 1),
                           "cool_h": round(sum(p.cool_s for p in pts) / 3600, 1)},
         "occupancy": occupancy(pts, z.unoccupied_heat, z.unoccupied_cool),
@@ -472,11 +487,79 @@ def list_audit(limit: int = 100, db: Session = Depends(get_db), _=Depends(curren
 
 @router.post("/campuses", status_code=201)
 def create_campus(body: CampusIn, db: Session = Depends(get_db), p=Depends(require_admin)):
+    _name_free(db, Campus, body.name, what="campus")
     c = Campus(name=body.name, timezone=body.timezone)
     db.add(c)
     db.flush()
     audit(db, p, "create_campus", c.name)
     return {"id": c.id}
+
+
+def _name_free(db: Session, model, name: str, exclude_id: int | None = None,
+               campus_id: int | None = None, what: str = "") -> None:
+    """Friendly 409 instead of a unique-constraint crash when a name is already used."""
+    q = select(model).where(model.name == name)
+    if campus_id is not None:
+        q = q.where(model.campus_id == campus_id)
+    if exclude_id is not None:
+        q = q.where(model.id != exclude_id)
+    with db.no_autoflush:  # don't flush (and so find) a new, still-pending row itself
+        taken = db.scalar(q)
+    if taken:
+        where = " on this campus" if campus_id is not None else ""
+        raise HTTPException(409, f"another {what} already has the name {name!r}{where}")
+
+
+def _campus_or_404(db: Session, campus_id: int) -> Campus:
+    c = db.get(Campus, campus_id)
+    if not c:
+        raise HTTPException(404, "campus not found")
+    return c
+
+
+@router.put("/campuses/{campus_id}")
+def update_campus(campus_id: int, body: CampusIn, db: Session = Depends(get_db),
+                  p=Depends(require_admin)):
+    c = _campus_or_404(db, campus_id)
+    clash = db.scalar(select(Campus).where(Campus.name == body.name, Campus.id != c.id))
+    if clash:
+        raise HTTPException(409, f"another campus already has the name {body.name!r}")
+    c.name, c.timezone = body.name, body.timezone
+    audit(db, p, "update_campus", c.name, body.model_dump())
+    return {"id": c.id, "name": c.name, "timezone": c.timezone}
+
+
+@router.delete("/campuses/{campus_id}")
+def delete_campus(campus_id: int, db: Session = Depends(get_db), p=Depends(require_admin)):
+    """Only an empty campus (no buildings, zones or rooms) can be removed."""
+    c = _campus_or_404(db, campus_id)
+    if c.zones or c.rooms or c.buildings:
+        raise HTTPException(409, "remove its buildings, zones and rooms first")
+    for t in list(c.thermostats):
+        t.campus_id = None
+    db.delete(c)
+    audit(db, p, "delete_campus", c.name)
+    return {"ok": True}
+
+
+@router.put("/thermostats/{thermostat_id}/zone")
+def set_thermostat_zone(thermostat_id: int, body: ThermostatZoneIn,
+                        db: Session = Depends(get_db), p=Depends(require_write)):
+    """Put a thermostat in a zone (or take it out with zone_id null)."""
+    t = db.get(Thermostat, thermostat_id)
+    if not t:
+        raise HTTPException(404, "thermostat not found")
+    if t.zone_id:
+        _check_target(db, p, "zone", t.zone_id)
+    if body.zone_id is None:
+        t.zone_id = None
+    else:
+        z = _zone_or_404(db, body.zone_id)
+        _check_campus(p, z.campus_id)
+        t.zone, t.campus_id = z, z.campus_id
+    db.flush()
+    audit(db, p, "set_thermostat_zone", t.name, body.model_dump())
+    return thermostat_dict(t)
 
 
 def _same_campus(obj, campus_id: int, what: str):
@@ -508,6 +591,7 @@ def _apply_zone(db: Session, z: Zone, body: ZoneIn):
 
 @router.post("/zones", status_code=201)
 def create_zone(body: ZoneIn, db: Session = Depends(get_db), p=Depends(require_write)):
+    _name_free(db, Zone, body.name, campus_id=body.campus_id, what="zone")
     _check_campus(p, body.campus_id)
     z = Zone(name=body.name, campus_id=body.campus_id)
     db.add(z)
@@ -523,6 +607,7 @@ def update_zone(zone_id: int, body: ZoneIn, db: Session = Depends(get_db),
     z = _zone_or_404(db, zone_id)
     _check_campus(p, z.campus_id)
     _check_campus(p, body.campus_id)
+    _name_free(db, Zone, body.name, z.id, body.campus_id, "zone")
     _apply_zone(db, z, body)
     audit(db, p, "update_zone", z.name, body.model_dump())
     return zone_dict(z)
@@ -567,6 +652,7 @@ def _room_or_404(db: Session, room_id: int) -> Room:
 
 @router.post("/buildings", status_code=201)
 def create_building(body: BuildingIn, db: Session = Depends(get_db), p=Depends(require_write)):
+    _name_free(db, Building, body.name, campus_id=body.campus_id, what="building")
     _check_campus(p, body.campus_id)
     if not db.get(Campus, body.campus_id):
         raise HTTPException(400, "campus not found")
@@ -584,6 +670,7 @@ def update_building(building_id: int, body: BuildingIn, db: Session = Depends(ge
     _check_campus(p, b.campus_id)
     if body.campus_id != b.campus_id:
         raise HTTPException(400, "a building can't move to another campus")
+    _name_free(db, Building, body.name, b.id, b.campus_id, "building")
     b.name = body.name
     audit(db, p, "update_building", b.name)
     return building_dict(b)
@@ -604,6 +691,7 @@ def delete_building(building_id: int, db: Session = Depends(get_db), p=Depends(r
 
 
 def _apply_room(db: Session, p: Principal, r: Room, body: RoomIn):
+    _name_free(db, Room, body.name, r.id, body.campus_id, "room")
     if body.building_id is not None:
         _same_campus(db.get(Building, body.building_id), body.campus_id, "building")
     if body.calendar_id:
@@ -731,6 +819,7 @@ def _set_group_zones(db: Session, p: Principal, g: ZoneGroup, zone_ids: list[int
 
 @router.post("/groups", status_code=201)
 def create_group(body: GroupIn, db: Session = Depends(get_db), p=Depends(require_write)):
+    _name_free(db, ZoneGroup, body.name, what="group")
     g = ZoneGroup(name=body.name, description=body.description)
     _set_group_zones(db, p, g, body.zone_ids)
     db.add(g)
@@ -743,6 +832,7 @@ def create_group(body: GroupIn, db: Session = Depends(get_db), p=Depends(require
 def update_group(group_id: int, body: GroupIn, db: Session = Depends(get_db),
                  p=Depends(require_write)):
     g = _group_or_404(db, group_id)
+    _name_free(db, ZoneGroup, body.name, g.id, what="group")
     g.name, g.description = body.name, body.description
     _set_group_zones(db, p, g, body.zone_ids)
     audit(db, p, "update_group", g.name, body.model_dump())

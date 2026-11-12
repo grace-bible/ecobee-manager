@@ -1,18 +1,16 @@
-{% extends "base.html" %}
-{% set section = 'setup' %}{% set sub = 'zones' %}
+{% extends "setup_layout.html" %}
 {% block title %}{{ zone.name ~ ' settings' if zone else 'New zone' }}{% endblock %}
 {% set cur_campus = zone.campus_id if zone else preset_campus %}
 {% set cur_building = zone.building_id if zone else preset_building %}
-{% block content %}
+{% block detail %}
 <div class="pagehead">
   <div>
-    <div class="crumbs"><a href="/setup">Buildings &amp; rooms</a>{% if zone %} / <a href="/zones/{{ zone.id }}">{{ zone.name }}</a>{% endif %}</div>
+    <div class="crumbs"><a href="/setup">Places</a>{% if zone %} / <a href="/setup/campuses/{{ zone.campus_id }}">{{ zone.campus.name }}</a>{% if zone.building %} / <a href="/setup/buildings/{{ zone.building_id }}">{{ zone.building.name }}</a>{% endif %}{% endif %}</div>
     <h1>{{ zone.name ~ ' settings' if zone else 'New zone' }}</h1>
     <p class="muted" style="margin:0">A zone is what the HVAC controls: thermostats that always move together. It serves one or more rooms, and a booking in any of them heats or cools the zone.</p>
   </div>
   {% if zone %}<a class="button secondary small" href="/zones/{{ zone.id }}">View zone</a>{% endif %}
 </div>
-{% if request.query_params.get('saved') %}<div class="msg">Saved.</div>{% endif %}
 
 <form method="post" action="/zones{% if zone %}/{{ zone.id }}{% endif %}">
   <div class="panel">

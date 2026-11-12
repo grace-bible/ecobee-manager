@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, available_timezones
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -77,6 +77,7 @@ SOURCES = {"override": "Override", "calendar": "Booking", "schedule": "Weekly sc
 templates.env.filters["local"] = _fmt_local
 templates.env.filters["when"] = _fmt_when
 templates.env.filters["deg"] = _fmt_deg
+templates.env.filters["zip_sum"] = lambda a, b: [x + y for x, y in zip(a, b, strict=True)]
 templates.env.globals["INTENTS"] = INTENTS
 templates.env.globals["SOURCES"] = SOURCES
 # Cache-bust the stylesheet: browsers keep /static/app.css otherwise.
@@ -154,11 +155,38 @@ def insights_page(request: Request, days: int = 7, db: Session = Depends(get_db)
 @router.get("/setup", response_class=HTMLResponse)
 def setup_page(request: Request, db: Session = Depends(get_db),
                p: Principal = Depends(current_principal)):
+    return render_setup(request, "setup.html", p, db, current=("overview", None),
+                        google=gcal.configured())
+
+
+def render_setup(request: Request, name: str, p: Principal, db: Session,
+                 current: tuple[str, int | None] | None = None, **ctx):
+    """Setup pages share a tree (campus → building → zone → rooms) beside the detail."""
     campuses, _ = _campus_tree(db)
     unassigned = db.scalars(select(Thermostat).where(Thermostat.zone_id.is_(None))
                             .order_by(Thermostat.name)).all()
-    return render(request, "setup.html", p, campuses=campuses, unassigned=unassigned,
-                  google=gcal.configured(), msg=request.query_params.get("msg"))
+    return render(request, name, p, tree=campuses, campuses=campuses, unassigned=unassigned,
+                  current=current or ("", None), msg=request.query_params.get("msg"), **ctx)
+
+
+@router.get("/setup/campuses/{campus_id}", response_class=HTMLResponse)
+def campus_setup_page(request: Request, campus_id: int, db: Session = Depends(get_db),
+                      p: Principal = Depends(current_principal)):
+    c = db.get(Campus, campus_id)
+    if not c:
+        raise HTTPException(404)
+    return render_setup(request, "campus_edit.html", p, db, current=("campus", c.id), campus=c,
+                        timezones=sorted(available_timezones()))
+
+
+@router.get("/setup/buildings/{building_id}", response_class=HTMLResponse)
+def building_setup_page(request: Request, building_id: int, db: Session = Depends(get_db),
+                        p: Principal = Depends(current_principal)):
+    b = db.get(Building, building_id)
+    if not b:
+        raise HTTPException(404)
+    return render_setup(request, "building_edit.html", p, db, current=("building", b.id),
+                        building=b, editable=p.can_write and p.may_touch_campus(b.campus_id))
 
 
 @router.get("/zones/new", response_class=HTMLResponse)
@@ -217,10 +245,10 @@ def zone_edit_page(request: Request, zone_id: int | None, db: Session = Depends(
     thermostats = db.scalars(select(Thermostat).where(
         (Thermostat.zone_id.is_(None)) | (Thermostat.zone_id == zone_id))
         .order_by(Thermostat.name)).all()
-    campuses, _ = _campus_tree(db)
     editable = p.can_write and (zone is None or p.may_touch_campus(zone.campus_id))
-    return render(request, "zone_edit.html", p, zone=zone, campuses=campuses,
-                  thermostats=thermostats, editable=editable,
+    return render_setup(request, "zone_edit.html", p, db,
+                        current=("zone", zone.id) if zone else ("new-zone", None), zone=zone,
+                        thermostats=thermostats, editable=editable,
                   preset_campus=_int(request.query_params.get("campus")),
                   preset_building=_int(request.query_params.get("building")))
 
@@ -270,21 +298,53 @@ async def save_zone(request: Request, zone_id: int | None = None, db: Session = 
         api.update_zone(zone_id, body, db, p)
     else:
         zone_id = api.create_zone(body, db, p)["id"]
-    return RedirectResponse(f"/zones/{zone_id}/edit?saved=1", status_code=303)
+    return RedirectResponse(f"/zones/{zone_id}/edit?msg=Saved", status_code=303)
 
 
 @router.post("/campuses")
 def add_campus(name: str = Form(...), timezone: str = Form("America/Chicago"),
                db: Session = Depends(get_db), p: Principal = Depends(require_admin)):
-    api.create_campus(api.CampusIn(name=name, timezone=timezone), db, p)
-    return RedirectResponse("/setup", status_code=303)
+    try:
+        body = api.CampusIn(name=name.strip(), timezone=timezone.strip())
+    except ValidationError as err:
+        raise HTTPException(422, err.errors()[0]["msg"].removeprefix("Value error, ")) from err
+    cid = api.create_campus(body, db, p)["id"]
+    return RedirectResponse(f"/setup/campuses/{cid}?msg=Campus added", status_code=303)
+
+
+@router.post("/campuses/{campus_id}")
+def save_campus(campus_id: int, name: str = Form(...), timezone: str = Form(...),
+                db: Session = Depends(get_db), p: Principal = Depends(require_admin)):
+    try:
+        body = api.CampusIn(name=name.strip(), timezone=timezone.strip())
+    except ValidationError as err:
+        raise HTTPException(422, err.errors()[0]["msg"].removeprefix("Value error, ")) from err
+    api.update_campus(campus_id, body, db, p)
+    return RedirectResponse(f"/setup/campuses/{campus_id}?msg=Saved", status_code=303)
+
+
+@router.post("/campuses/{campus_id}/delete")
+def remove_campus(campus_id: int, db: Session = Depends(get_db),
+                  p: Principal = Depends(require_admin)):
+    api.delete_campus(campus_id, db, p)
+    return RedirectResponse("/setup?msg=Campus removed", status_code=303)
+
+
+@router.post("/thermostats/{thermostat_id}/zone")
+def assign_thermostat(request: Request, thermostat_id: int, zone_id: str = Form(""),
+                      db: Session = Depends(get_db), p: Principal = Depends(require_write)):
+    t = api.set_thermostat_zone(thermostat_id, api.ThermostatZoneIn(zone_id=_int(zone_id)), db, p)
+    return _back(request, f"/zones/{t['zone_id']}/edit" if t["zone_id"] else "/setup")
 
 
 @router.post("/zones/{zone_id}/delete")
 def delete_zone(zone_id: int, db: Session = Depends(get_db),
                 p: Principal = Depends(require_write)):
+    z = db.get(Zone, zone_id)
+    back = f"/setup/buildings/{z.building_id}" if z and z.building_id else (
+        f"/setup/campuses/{z.campus_id}" if z else "/setup")
     api.delete_zone(zone_id, db, p)
-    return RedirectResponse("/setup", status_code=303)
+    return RedirectResponse(f"{back}?msg=Zone removed", status_code=303)
 
 
 # ---------- buildings & rooms (setup) ----------
@@ -298,15 +358,18 @@ def save_building(building_id: int | None = None, name: str = Form(...),
     if building_id:
         api.update_building(building_id, body, db, p)
     else:
-        api.create_building(body, db, p)
-    return RedirectResponse(f"/setup?msg=Saved {body.name}#campus-{campus_id}", status_code=303)
+        building_id = api.create_building(body, db, p)["id"]
+    return RedirectResponse(f"/setup/buildings/{building_id}?msg=Saved", status_code=303)
 
 
 @router.post("/buildings/{building_id}/delete")
 def remove_building(building_id: int, db: Session = Depends(get_db),
                     p: Principal = Depends(require_write)):
+    b = db.get(Building, building_id)
+    cid = b.campus_id if b else None
     api.delete_building(building_id, db, p)
-    return RedirectResponse("/setup?msg=Building removed", status_code=303)
+    return RedirectResponse(f"/setup/campuses/{cid}?msg=Building removed" if cid else "/setup",
+                            status_code=303)
 
 
 @router.get("/rooms/new", response_class=HTMLResponse)
@@ -322,9 +385,9 @@ def room_edit_page(request: Request, room_id: int | None = None, db: Session = D
             resources = gcal.list_resources()
         except Exception as err:  # show the page anyway; the id can be typed in
             resource_error = str(err)
-    campuses, _ = _campus_tree(db)
-    return render(request, "room_edit.html", p, room=room, campuses=campuses,
-                  resources=resources, resource_error=resource_error,
+    return render_setup(request, "room_edit.html", p, db,
+                        current=("room", room.id) if room else ("new-room", None), room=room,
+                        resources=resources, resource_error=resource_error,
                   preset_campus=_int(request.query_params.get("campus")),
                   preset_building=_int(request.query_params.get("building")),
                   editable=p.can_write and (room is None or p.may_touch_campus(room.campus_id)))
@@ -347,16 +410,18 @@ async def save_room(request: Request, room_id: int | None = None,
     if room_id:
         api.update_room(room_id, body, db, p)
     else:
-        api.create_room(body, db, p)
-    return RedirectResponse(f"/setup?msg=Saved {body.name}#campus-{body.campus_id}",
-                            status_code=303)
+        room_id = api.create_room(body, db, p)["id"]
+    return RedirectResponse(f"/rooms/{room_id}/edit?msg=Saved", status_code=303)
 
 
 @router.post("/rooms/{room_id}/delete")
 def remove_room(room_id: int, db: Session = Depends(get_db),
                 p: Principal = Depends(require_write)):
+    r = db.get(Room, room_id)
+    back = f"/setup/buildings/{r.building_id}" if r and r.building_id else (
+        f"/setup/campuses/{r.campus_id}" if r else "/setup")
     api.delete_room(room_id, db, p)
-    return RedirectResponse("/setup?msg=Room removed", status_code=303)
+    return RedirectResponse(f"{back}?msg=Room removed", status_code=303)
 
 
 @router.get("/setup/import", response_class=HTMLResponse)
@@ -366,9 +431,8 @@ def import_page(request: Request, db: Session = Depends(get_db),
         gbuildings, error = (api.google_buildings(p) if gcal.configured() else []), None
     except Exception as err:
         gbuildings, error = [], str(err)
-    return render(request, "import.html", p, gbuildings=gbuildings, error=error,
-                  campuses=db.scalars(select(Campus).order_by(Campus.name)).all(),
-                  google=gcal.configured())
+    return render_setup(request, "import.html", p, db, current=("import", None),
+                        gbuildings=gbuildings, error=error, google=gcal.configured())
 
 
 @router.post("/setup/import")

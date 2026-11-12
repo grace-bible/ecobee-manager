@@ -100,7 +100,7 @@ def test_schedule_blocks_groups_and_preview():
         r = c.post("/schedule-blocks", data={"zone_id": zone, "start": "18:00", "end": "21:00",
                                              "mode": "occupied"},
                    headers={"accept": "text/html"})
-        assert r.status_code == 422 and "pick at least one day" in r.text
+        assert r.status_code == 422 and "pick at least one day" in r.text.lower()
 
         assert c.delete(f"/api/v1/schedule-blocks/{b}").json() == {"ok": True}
         assert c.delete(f"/api/v1/groups/{g['id']}").json() == {"ok": True}

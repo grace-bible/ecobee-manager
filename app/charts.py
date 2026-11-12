@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
+from itertools import pairwise
 from zoneinfo import ZoneInfo
 
 from markupsafe import Markup, escape
@@ -21,7 +22,8 @@ STRIP = 12
 GAP = timedelta(minutes=16)  # longer than this between points → break the line
 
 
-def room_chart(points: list[Point], start: datetime, end: datetime, tz: str) -> Markup:
+def room_chart(points: list[Point], start: datetime, end: datetime, tz: str,
+               gap: timedelta = GAP) -> Markup:
     zone = ZoneInfo(tz)
     plot_h = H - TOP - BOTTOM
     temps = [v for p in points for v in (p.temp, p.outdoor) if v is not None]
@@ -51,7 +53,7 @@ def room_chart(points: list[Point], start: datetime, end: datetime, tz: str) -> 
             if v is None:
                 prev = None
                 continue
-            cmd = "L" if prev and p.at - prev <= GAP else "M"
+            cmd = "L" if prev and p.at - prev <= gap else "M"
             d.append(f"{cmd}{x(p.at):.1f},{y(v):.1f}")
             prev = p.at
         return " ".join(d)
@@ -67,7 +69,9 @@ def room_chart(points: list[Point], start: datetime, end: datetime, tz: str) -> 
 
     # x labels: midnights (and noon on short ranges)
     local = start.astimezone(zone).replace(minute=0, second=0, microsecond=0)
-    step = timedelta(hours=6) if span <= 2 * 86400 else timedelta(days=1)
+    days = span / 86400
+    step = (timedelta(hours=6) if days <= 2 else timedelta(days=1) if days <= 8
+            else timedelta(days=3))
     t = local.replace(hour=0) if step >= timedelta(days=1) else local.replace(
         hour=local.hour - local.hour % 6)
     while t <= end:
@@ -84,8 +88,8 @@ def room_chart(points: list[Point], start: datetime, end: datetime, tz: str) -> 
     for i, p in enumerate(points):
         if p.heat_sp is None or p.cool_sp is None:
             continue
-        nxt = points[i + 1].at if i + 1 < len(points) and points[i + 1].at - p.at <= GAP \
-            else p.at + timedelta(minutes=5)
+        nxt = points[i + 1].at if i + 1 < len(points) and points[i + 1].at - p.at <= gap \
+            else p.at + (gap - timedelta(minutes=6)) / 2
         band.append(f'<rect class="band" x="{x(p.at):.1f}" y="{y(p.cool_sp):.1f}" '
                     f'width="{max(x(nxt) - x(p.at), 0.5):.1f}" '
                     f'height="{max(y(p.heat_sp) - y(p.cool_sp), 0):.1f}"/>')
@@ -99,10 +103,12 @@ def room_chart(points: list[Point], start: datetime, end: datetime, tz: str) -> 
     # runtime strip
     sy = H - BOTTOM + 2
     strip = []
+    width = min((b.at - a.at for a, b in pairwise(points)),
+                default=timedelta(minutes=5))
     for p in points:
-        w = max(x(p.at + timedelta(minutes=5)) - x(p.at), 0.6)
+        w = max(x(p.at + width) - x(p.at), 0.6)
         for cls, s in (("run-heat", p.heat_s), ("run-cool", p.cool_s)):
-            if s:
+            if s:  # s = average seconds per 5 minutes in this step
                 strip.append(f'<rect class="{cls}" x="{x(p.at):.1f}" y="{sy}" width="{w:.1f}" '
                              f'height="{STRIP}" opacity="{min(s / 300, 1):.2f}"/>')
     parts.append(f'<rect class="strip-bg" x="{LEFT}" y="{sy}" width="{W - LEFT - RIGHT}" '

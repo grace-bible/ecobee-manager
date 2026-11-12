@@ -1,27 +1,38 @@
 {% extends "base.html" %}
 {% set section = 'setup' %}{% set sub = 'zones' %}
-{% block title %}{{ zone.name ~ ' settings' if zone else 'New room' }}{% endblock %}
+{% block title %}{{ zone.name ~ ' settings' if zone else 'New zone' }}{% endblock %}
+{% set cur_campus = zone.campus_id if zone else preset_campus %}
+{% set cur_building = zone.building_id if zone else preset_building %}
 {% block content %}
 <div class="pagehead">
   <div>
-    <div class="crumbs"><a href="/setup">Rooms &amp; campuses</a>{% if zone %} / <a href="/zones/{{ zone.id }}">{{ zone.name }}</a>{% endif %}</div>
-    <h1>{{ zone.name ~ ' settings' if zone else 'New room' }}</h1>
+    <div class="crumbs"><a href="/setup">Buildings &amp; rooms</a>{% if zone %} / <a href="/zones/{{ zone.id }}">{{ zone.name }}</a>{% endif %}</div>
+    <h1>{{ zone.name ~ ' settings' if zone else 'New zone' }}</h1>
+    <p class="muted" style="margin:0">A zone is what the HVAC controls: thermostats that always move together. It serves one or more rooms, and a booking in any of them heats or cools the zone.</p>
   </div>
-  {% if zone %}<a class="button secondary small" href="/zones/{{ zone.id }}">View room</a>{% endif %}
+  {% if zone %}<a class="button secondary small" href="/zones/{{ zone.id }}">View zone</a>{% endif %}
 </div>
 {% if request.query_params.get('saved') %}<div class="msg">Saved.</div>{% endif %}
 
 <form method="post" action="/zones{% if zone %}/{{ zone.id }}{% endif %}">
   <div class="panel">
     <div class="formgrid">
-      <label>Room name <input name="name" required value="{{ zone.name if zone else '' }}" placeholder="e.g. Fellowship Hall"></label>
+      <label>Zone name <input name="name" required value="{{ zone.name if zone else '' }}" placeholder="e.g. Kids Wing west"></label>
       <label>Campus
-        <select name="campus_id" required>
-          {% for c in campuses if me.may_touch_campus(c.id) or (zone and zone.campus_id == c.id) %}<option value="{{ c.id }}" {% if zone and zone.campus_id == c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+        <select name="campus_id" required id="campus">
+          {% for c in campuses if me.may_touch_campus(c.id) or (zone and zone.campus_id == c.id) %}<option value="{{ c.id }}" {% if c.id == cur_campus %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Building
+        <select name="building_id">
+          <option value="">None</option>
+          {% for c in campuses %}{% if c.buildings %}<optgroup label="{{ c.name }}" data-campus="{{ c.id }}">
+            {% for b in c.buildings %}<option value="{{ b.id }}" {% if b.id == cur_building %}selected{% endif %}>{{ b.name }}</option>{% endfor %}
+          </optgroup>{% endif %}{% endfor %}
         </select>
       </label>
     </div>
-    <p><label class="check"><input type="checkbox" name="enabled" {% if not zone or zone.enabled %}checked{% endif %}> The app controls this room <span class="muted">(untick to pause)</span></label></p>
+    <p><label class="check"><input type="checkbox" name="enabled" {% if not zone or zone.enabled %}checked{% endif %}> The app controls this zone <span class="muted">(untick to pause)</span></label></p>
   </div>
 
   <h2>Thermostats</h2>
@@ -34,6 +45,35 @@
     </div>
   </div>
 
+  <h2>Rooms it serves</h2>
+  <div class="panel">
+    {% set mine = zone.rooms | map(attribute='id') | list if zone else [] %}
+    {% set any_rooms = namespace(v=false) %}
+    {% for c in campuses %}{% if c.rooms %}{% set any_rooms.v = true %}
+      <div data-campus="{{ c.id }}" class="room-picker">
+        {% if campuses | length > 1 %}<h3>{{ c.name }}</h3>{% endif %}
+        {% for b in c.buildings + [none] %}
+          {% set rs = c.rooms | selectattr('building_id', 'equalto', b.id if b else none) | list %}
+          {% if rs %}
+          <p class="muted" style="margin:10px 0 6px;font-size:13px">{{ b.name if b else 'Not in a building' }}</p>
+          <div class="grid">
+            {% for r in rs %}<label class="check"><input type="checkbox" name="room_ids" value="{{ r.id }}" {% if r.id in mine %}checked{% endif %}>
+              <span>{{ r.name }}{% if r.calendar_id %} <span class="muted" title="Has a room calendar">📅</span>{% endif %}
+                {% set others = r.zones | rejectattr('id', 'equalto', zone.id if zone else -1) | list %}
+                {% if others %}<span class="muted" style="font-size:12px">· also {{ others | map(attribute='name') | join(', ') }}</span>{% endif %}</span></label>{% endfor %}
+          </div>
+          {% endif %}
+        {% endfor %}
+      </div>
+    {% endif %}{% endfor %}
+    {% if not any_rooms.v %}<p class="muted">No rooms yet. <a href="/rooms/new">Add one</a> or import them from Google in Setup.</p>{% endif %}
+    <div class="formgrid" style="margin-top:14px">
+      <label>Start heating or cooling this many minutes before a booking <input type="number" name="lead_minutes" min="0" max="240" value="{{ zone.lead_minutes if zone else 45 }}"></label>
+      <label>Keep going this many minutes after <input type="number" name="tail_minutes" min="0" max="240" value="{{ zone.tail_minutes if zone else 15 }}"></label>
+    </div>
+    <p class="muted" style="font-size:13px">Booking tags: <code>#nohvac</code> ignores a booking; <code>#hvac:heat=70</code> and <code>#hvac:cool=71</code> set its temperatures.</p>
+  </div>
+
   <h2>Comfort</h2>
   <div class="panel">
     <div class="formgrid">
@@ -44,51 +84,33 @@
       <label>Never below (°F) <input type="number" step="0.5" name="min_setpoint" value="{{ zone.min_setpoint if zone else 60 }}"></label>
       <label>Never above (°F) <input type="number" step="0.5" name="max_setpoint" value="{{ zone.max_setpoint if zone else 85 }}"></label>
     </div>
-    <p class="muted" style="font-size:13px">"Off" uses the never-below / never-above limits, so the building is still protected.</p>
+    <p class="muted" style="font-size:13px">"Off" uses the never-below / never-above limits, so the building is still protected. The weekly schedule is on the <a href="{{ '/zones/' ~ zone.id ~ '#schedule' if zone else '#' }}">zone's page</a>.</p>
   </div>
 
-  <h2>Room calendar</h2>
-  <div class="panel">
-    {% if resources %}
-      <label>Google room calendar
-        <select name="calendar_id">
-          <option value="">None</option>
-          {% for r in resources %}
-            <option value="{{ r.email }}" {% if zone and zone.calendar_id == r.email %}selected{% endif %}>
-              {% if r.building %}{{ r.building }} · {% endif %}{{ r.name }}{% if r.capacity %} ({{ r.capacity }}){% endif %}
-            </option>
-          {% endfor %}
-        </select>
-      </label>
-    {% else %}
-      <label>Room calendar ID
-        <input name="calendar_id" placeholder="c_…@resource.calendar.google.com" value="{{ zone.calendar_id if zone and zone.calendar_id else '' }}" style="max-width:520px">
-      </label>
-      <p class="muted" style="font-size:13px">{% if resource_error %}Couldn't list rooms: {{ resource_error }}{% else %}Once Google Calendar is connected (System), rooms can be picked from a list.{% endif %}</p>
-    {% endif %}
-    <div class="formgrid" style="margin-top:14px">
-      <label>Start this many minutes before a booking <input type="number" name="lead_minutes" min="0" max="240" value="{{ zone.lead_minutes if zone else 45 }}"></label>
-      <label>Keep going this many minutes after <input type="number" name="tail_minutes" min="0" max="240" value="{{ zone.tail_minutes if zone else 15 }}"></label>
-    </div>
-    <p class="muted" style="font-size:13px">Booking tags: <code>#nohvac</code> ignores a booking; <code>#hvac:heat=70</code> and <code>#hvac:cool=71</code> set its temperatures.</p>
-  </div>
-
-  {% if editable %}<div class="formfoot"><button type="submit">{{ 'Save room' if zone else 'Create room' }}</button>
+  {% if editable %}<div class="formfoot"><button type="submit">{{ 'Save zone' if zone else 'Create zone' }}</button>
     {% if zone %}<a href="/zones/{{ zone.id }}" class="muted">Cancel</a>{% endif %}</div>{% endif %}
 </form>
 
-{% if zone %}
-<h2 id="schedule">Weekly schedule</h2>
-<p class="muted">When the room is normally in use. Bookings and overrides take priority.
-  {% if zone.groups %}Group schedules also apply: {{ zone.groups | map(attribute='name') | join(', ') }}.{% endif %}</p>
-{% with owner_field='zone_id', owner_id=zone.id, editable=editable %}{% include "partials/schedule.html" %}{% endwith %}
-
-{% if editable %}
-<h2>Remove room</h2>
-<form class="panel" method="post" action="/zones/{{ zone.id }}/delete" onsubmit="return confirm('Remove this room? Its thermostats go back to their own program when the current hold ends.')">
-  <p class="muted">Its thermostats aren't changed; they return to their own ecobee program when the current hold ends.</p>
-  <button class="danger">Remove room</button>
+{% if zone and editable %}
+<h2>Remove zone</h2>
+<form class="panel" method="post" action="/zones/{{ zone.id }}/delete" onsubmit="return confirm('Remove this zone? Its thermostats go back to their own program when the current hold ends. Its rooms are kept.')">
+  <p class="muted">Its thermostats aren't changed; they return to their own ecobee program when the current hold ends. Its rooms and their calendars are kept.</p>
+  <button class="danger">Remove zone</button>
 </form>
 {% endif %}
-{% endif %}
+
+<script>
+// Only show buildings and rooms on the chosen campus.
+(() => {
+  const sel = document.getElementById('campus'); if (!sel) return;
+  const sync = () => {
+    document.querySelectorAll('[data-campus]').forEach(el => {
+      const on = el.dataset.campus === sel.value;
+      el.hidden = !on;
+      if (!on) el.querySelectorAll('input, option').forEach(i => { i.checked = false; i.selected = false; });
+    });
+  };
+  sel.addEventListener('change', sync); sync();
+})();
+</script>
 {% endblock %}

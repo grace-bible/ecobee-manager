@@ -14,9 +14,12 @@ def test_flow():
         ids = [t["id"] for t in therms if "Kids Wing" in t["name"]]
 
         campus = c.post("/api/v1/campuses", json={"name": "Midtown"}).json()["id"]
+        room = c.post("/api/v1/rooms", json={
+            "name": "Kids 101", "campus_id": campus,
+            "calendar_id": "c_123@resource.calendar.google.com"}).json()["id"]
         zone = c.post("/api/v1/zones", json={
             "name": "Kids Wing", "campus_id": campus, "thermostat_ids": ids,
-            "calendar_id": "c_123@resource.calendar.google.com"}).json()["id"]
+            "room_ids": [room]}).json()["id"]
 
         # Nothing booked → default unoccupied setpoints get sent once
         r = reconciler.reconcile_once()
@@ -140,8 +143,8 @@ def test_campus_manager_scoping(monkeypatch):
             "zone_id": z_other, "weekdays": 1, "start": "08:00", "end": "09:00"}).status_code == 403
         assert c.get("/api/v1/users").status_code == 403
         # UI hides what they can't change
-        assert "Save room" not in c.get(f"/zones/{z_other}/edit").text
-        assert "Save room" in c.get(f"/zones/{z_mine.json()['id']}/edit").text
+        assert "Save zone" not in c.get(f"/zones/{z_other}/edit").text
+        assert "Save zone" in c.get(f"/zones/{z_mine.json()['id']}/edit").text
         assert "In use · 2h" not in c.get(f"/zones/{z_other}").text  # no quick actions
         assert "In use · 2h" in c.get(f"/zones/{z_mine.json()['id']}").text
         assert f"/overrides/{o}/cancel" not in c.get("/overrides").text

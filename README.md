@@ -11,7 +11,11 @@ spaces. One container + Postgres; web UI and REST API; zones follow Google Works
 
 ## How it behaves
 
-- Each **zone** (a room, one or more thermostats) resolves a target every minute:
+- **Campus → building → zone ↔ room.** A **room** is what people book (its own Google room
+  calendar); a **zone** is what the HVAC controls (one or more thermostats). A zone serves
+  one or more rooms and is booked when any of them is. Buildings and groups can be
+  overridden or scheduled as a whole.
+- Each **zone** resolves a target every minute:
   override → room-calendar booking (with lead/tail) → weekly schedule → unoccupied default.
 - Targets are sent as **timed holds** that end just after the next change (≤ 4 h). If this app
   stops, holds expire and thermostats fall back to their own on-device program, so set

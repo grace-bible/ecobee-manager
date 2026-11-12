@@ -10,7 +10,7 @@ Full design: `docs/SPEC.md` — read it before changing behavior.
 
 ```bash
 python -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
-pytest -q                      # 45 tests, ~4 s
+pytest -q                      # 56 tests, ~8 s
 ruff check app tests           # must stay clean
 # Local run with 6 simulated thermostats (nothing real touched):
 ECOBEE_BACKEND=fake DEV_AUTH_EMAIL=you@example.org \
@@ -24,6 +24,7 @@ ECOBEE_BACKEND=fake DEV_AUTH_EMAIL=you@example.org \
 | Path | What |
 |---|---|
 | `app/resolver.py` | **Pure** scheduling logic: override > calendar > schedule > default, guardrails, `next_change`. No I/O — keep it that way and test it in `tests/test_resolver.py`. |
+| `app/models.py` | Campus → Building → Zone (HVAC: thermostats, comfort, schedule) ↔ Room (bookable, own Google calendar; `zone_room` many-to-many). Groups cut across buildings. |
 | `app/reconciler.py` | Resolver output vs. what was last sent → batched `set_hold`. `plan()` is read-only. |
 | `app/ecobee/backend.py` | `ThermostatBackend` protocol + `EcobeeCloudBackend`. The only code that talks to ecobee. |
 | `app/ecobee/fake.py`, `dryrun.py` | Simulated backend for dev/tests; wrapper that logs writes instead of sending. |

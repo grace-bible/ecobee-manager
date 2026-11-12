@@ -1,35 +1,76 @@
 {% extends "base.html" %}
 {% set section = 'setup' %}{% set sub = 'zones' %}
 {% block title %}Setup{% endblock %}
+{% macro therms(z) %}{% for t in z.thermostats | sort(attribute='name') %}<span class="dot {{ 'on' if t.connected else 'off' }}"></span>{{ t.name or t.identifier }}{% if not loop.last %}<br>{% endif %}{% else %}<span class="muted">none</span>{% endfor %}{% endmacro %}
 {% block content %}
 <div class="pagehead">
-  <div><h1>Rooms &amp; campuses</h1>
-    <p class="muted" style="margin:0">A room is one or more thermostats that always move together, with its own comfort settings, schedule and room calendar.</p></div>
-  {% if me.can_write %}<a class="button" href="/zones/new">+ New room</a>{% endif %}
+  <div><h1>Buildings &amp; rooms</h1>
+    <p class="muted" style="margin:0;max-width:760px"><strong>Rooms</strong> are what people book; each has its own Google room calendar. <strong>Zones</strong> are what the HVAC controls: thermostats that move together. A zone serves one or more rooms, and a booking in any of them heats or cools it.</p></div>
+  <div class="building-actions">
+    {% if me.role == 'admin' and google %}<a class="button secondary" href="/setup/import">Import rooms from Google</a>{% endif %}
+    {% if me.can_write %}<a class="button secondary" href="/rooms/new">+ Room</a><a class="button" href="/zones/new">+ Zone</a>{% endif %}
+  </div>
 </div>
+{% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
 
 {% for c in campuses %}
-  <div class="section-head"><h2>{{ c.name }}</h2><span class="muted">{{ c.timezone }}</span></div>
-  <div class="tablewrap"><table>
-    <thead><tr><th>Room</th><th>Thermostats</th><th class="hide-sm">Calendar</th><th class="hide-sm">Comfort</th><th></th></tr></thead>
-    <tbody>
-    {% for z in c.zones | sort(attribute='name') %}
-      <tr>
-        <td><a href="/zones/{{ z.id }}"><strong>{{ z.name }}</strong></a>{% if not z.enabled %} <span class="badge">paused</span>{% endif %}</td>
-        <td>{% for t in z.thermostats | sort(attribute='name') %}<span class="dot {{ 'on' if t.connected else 'off' }}"></span>{{ t.name or t.identifier }}{% if not loop.last %}<br>{% endif %}{% else %}<span class="muted">none</span>{% endfor %}</td>
-        <td class="hide-sm muted">{{ z.calendar_name or '—' }}</td>
-        <td class="hide-sm num"><span class="heat">{{ z.occupied_heat | deg }}°</span>–<span class="cool">{{ z.occupied_cool | deg }}°</span> <span class="muted">in use</span></td>
-        <td class="right">{% if me.can_write and me.may_touch_campus(c.id) %}<a class="button secondary small" href="/zones/{{ z.id }}/edit">Edit</a>{% endif %}</td>
-      </tr>
-    {% else %}<tr><td colspan="5" class="muted">No rooms on this campus yet.</td></tr>{% endfor %}
-    </tbody>
-  </table></div>
+  {% set touch = me.can_write and me.may_touch_campus(c.id) %}
+  <div class="section-head" id="campus-{{ c.id }}"><h2>{{ c.name }}</h2><span class="muted">{{ c.timezone }}</span></div>
+  {% for b in c.buildings + [none] %}
+    {% set bid = b.id if b else none %}
+    {% set zones = c.zones | selectattr('building_id', 'equalto', bid) | sort(attribute='name') | list %}
+    {% set loose_rooms = c.rooms | selectattr('building_id', 'equalto', bid) | rejectattr('zones') | list %}
+    {% if b or zones or loose_rooms %}
+    <div class="panel setup-building">
+      <div class="section-head" style="margin:0 0 10px">
+        {% if b %}
+          <form method="post" action="/buildings/{{ b.id }}" class="inline-edit">
+            <input type="hidden" name="campus_id" value="{{ c.id }}">
+            <h3 style="margin:0"><a href="/buildings/{{ b.id }}">{{ b.name }}</a></h3>
+            {% if touch %}<details><summary class="muted">Rename or remove</summary>
+              <div class="bulk" style="margin-top:8px"><input name="name" value="{{ b.name }}" aria-label="Building name"><button class="secondary small">Rename</button>
+                <button class="danger small" formaction="/buildings/{{ b.id }}/delete" onclick="return confirm('Remove {{ b.name }}? Its zones and rooms are kept, without a building.')">Remove</button></div>
+            </details>{% endif %}
+          </form>
+        {% else %}<h3 style="margin:0">Not in a building</h3>{% endif %}
+        {% if touch %}<span class="building-actions"><a class="button secondary small" href="/zones/new?campus={{ c.id }}{% if b %}&building={{ b.id }}{% endif %}">+ Zone</a><a class="button secondary small" href="/rooms/new?campus={{ c.id }}{% if b %}&building={{ b.id }}{% endif %}">+ Room</a></span>{% endif %}
+      </div>
+      {% if zones or loose_rooms %}
+      <table>
+        <thead><tr><th>Zone</th><th>Rooms it serves</th><th class="hide-sm">Thermostats</th><th></th></tr></thead>
+        <tbody>
+        {% for z in zones %}
+          <tr>
+            <td><a href="/zones/{{ z.id }}"><strong>{{ z.name }}</strong></a>{% if not z.enabled %} <span class="badge">paused</span>{% endif %}</td>
+            <td>{% for r in z.rooms %}<a href="/rooms/{{ r.id }}/edit" class="plain">{{ r.name }}</a>{% if r.calendar_id %} <span title="Has a room calendar">📅</span>{% endif %}{% if not loop.last %}, {% endif %}{% else %}<span class="muted">no rooms</span>{% endfor %}</td>
+            <td class="hide-sm">{{ therms(z) }}</td>
+            <td class="right">{% if touch %}<a class="button secondary small" href="/zones/{{ z.id }}/edit">Edit</a>{% endif %}</td>
+          </tr>
+        {% endfor %}
+        {% if loose_rooms %}
+          <tr><td class="muted">No zone yet</td>
+            <td>{% for r in loose_rooms %}<a href="/rooms/{{ r.id }}/edit" class="plain">{{ r.name }}</a>{% if r.calendar_id %} <span title="Has a room calendar">📅</span>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+            <td class="hide-sm"></td><td></td></tr>
+        {% endif %}
+        </tbody>
+      </table>
+      {% else %}<p class="muted" style="margin:0">Nothing in this building yet.</p>{% endif %}
+    </div>
+    {% endif %}
+  {% endfor %}
+  {% if touch %}
+  <form class="bulk" method="post" action="/buildings" style="margin:-4px 0 8px">
+    <input type="hidden" name="campus_id" value="{{ c.id }}">
+    <input name="name" required placeholder="New building on {{ c.name }}" aria-label="New building name">
+    <button class="secondary small">Add building</button>
+  </form>
+  {% endif %}
 {% else %}
-  <div class="panel empty"><strong>Start with a campus</strong>Add one below, then create rooms and put thermostats in them.</div>
+  <div class="panel empty"><strong>Start with a campus</strong>Add one below, then buildings, rooms and zones.</div>
 {% endfor %}
 
 {% if unassigned %}
-<div class="section-head"><h2>Not in a room</h2><span class="muted">The app leaves these alone</span></div>
+<div class="section-head"><h2>Thermostats not in a zone</h2><span class="muted">The app leaves these alone</span></div>
 <div class="tablewrap"><table>
   <thead><tr><th>Thermostat</th><th class="right">Now</th><th class="right">Set at the wall</th><th class="hide-sm">ecobee ID</th></tr></thead>
   <tbody>{% for t in unassigned %}

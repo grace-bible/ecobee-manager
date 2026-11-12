@@ -1,27 +1,28 @@
 {% extends "base.html" %}
-{% set section = 'setup' %}{% set sub = 'groups' %}
+{% set section = 'rooms' %}
+{% import "partials/room_ui.html" as ui with context %}
 {% block title %}{{ group.name }}{% endblock %}
 {% block content %}
-<div class="crumbs"><a href="/groups">Groups</a></div>
-<h1>{{ group.name }}</h1>
-<form class="panel" method="post" action="/groups/{{ group.id }}">
-  <div class="grid">
-    <label>Name <input name="name" required value="{{ group.name }}"></label>
-    <label>Description <input name="description" value="{{ group.description or '' }}"></label>
+<div class="pagehead">
+  <div>
+    <div class="crumbs"><a href="/">Rooms</a> / Group</div>
+    <h1>{{ group.name }}</h1>
+    {% if group.description %}<p class="muted" style="margin:0">{{ group.description }}</p>{% endif %}
   </div>
-  {% set selected = group.zones | map(attribute='id') | list %}
-  {% include "partials/zone_picker.html" %}
-  {% if me.can_write %}<p><button>Save group</button></p>{% endif %}
-</form>
+  <div class="building-actions">
+    {% if editable %}{{ ui.quick_actions('group', group.id, group.name) }}{% endif %}
+    {% if editable %}<a class="button secondary small" href="/groups/{{ group.id }}/edit">Group settings</a>{% endif %}
+  </div>
+</div>
 
-<h2>Weekly schedule</h2>
-<p class="muted">Applies to every zone in the group. A zone's own blocks win over these.</p>
+<div class="rooms">
+  {% for z in group.zones | sort(attribute='name') if z.enabled %}{{ ui.room_card(z, status[z.id], z.campus.timezone, editable) }}
+  {% else %}<div class="panel muted">No zones in this group.</div>{% endfor %}
+</div>
+
+<h2 id="schedule">Weekly schedule for the group</h2>
+<p class="muted">Applies to every zone in the group unless the zone has its own schedule at that time. Bookings and overrides still take priority.</p>
 {% with owner_field='group_id', owner_id=group.id, editable=editable %}{% include "partials/schedule.html" %}{% endwith %}
 
-{% if editable %}
-<h2>Danger zone</h2>
-<form method="post" action="/groups/{{ group.id }}/delete" onsubmit="return confirm('Delete this group? Its schedule blocks and overrides go with it. Zones are kept.')">
-  <button class="danger">Delete group</button>
-</form>
-{% endif %}
+{{ ui.adjust_dialog() }}
 {% endblock %}

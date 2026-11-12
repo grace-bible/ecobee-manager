@@ -22,14 +22,24 @@ from app.auth import (
 from app.config import get_settings
 from app.db import get_db
 from app.ecobee.backend import AuthRequired, BackendError
-from app.insights import Point, daily_runtime, merge_room, occupancy, warmup_summary, warmups
+from app.insights import (
+    Point,
+    daily_runtime,
+    hourly_runtime,
+    merge_room,
+    occupancy,
+    time_to_target,
+    time_to_target_summary,
+)
 from app.models import (
     Alert,
     ApiKey,
     AppUser,
     AuditLog,
+    Building,
     Campus,
     Override,
+    Room,
     ScheduleBlock,
     Thermostat,
     Zone,
@@ -51,12 +61,33 @@ class CampusIn(BaseModel):
     timezone: str = "America/Chicago"
 
 
+class BuildingIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    campus_id: int
+
+
+class RoomIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    campus_id: int
+    building_id: int | None = None
+    calendar_id: str | None = None  # Google room calendar (resourceEmail)
+    capacity: int | None = None
+    zone_ids: list[int] | None = None  # None = leave the room's zones as they are
+
+
+class GoogleImportIn(BaseModel):
+    """Which campus each Google Workspace building's rooms go to ("" = rooms with no
+    building). Buildings left out are skipped."""
+
+    campuses: dict[str, int]
+
+
 class ZoneIn(BaseModel):
     name: str
     campus_id: int
+    building_id: int | None = None
     enabled: bool = True
-    calendar_id: str | None = None
-    calendar_name: str | None = None
+    room_ids: list[int] | None = None  # None = leave the zone's rooms as they are
     lead_minutes: int = Field(45, ge=0, le=240)
     tail_minutes: int = Field(15, ge=0, le=240)
     occupied_heat: float = 68
@@ -81,7 +112,7 @@ class GroupIn(BaseModel):
 
 
 class OverrideIn(BaseModel):
-    target: Literal["thermostat", "zone", "group"]
+    target: Literal["thermostat", "zone", "group", "building"]
     target_id: int
     mode: Mode = "custom"
     heat: float | None = None
@@ -102,6 +133,7 @@ class OverrideIn(BaseModel):
 class BlockIn(BaseModel):
     zone_id: int | None = None
     group_id: int | None = None
+    building_id: int | None = None
     weekdays: int = Field(..., ge=1, le=127, description="Mon=1 … Sun=64")
     start: str  # "HH:MM"
     end: str
@@ -112,8 +144,8 @@ class BlockIn(BaseModel):
 
     @model_validator(mode="after")
     def _check(self):
-        if (self.zone_id is None) == (self.group_id is None):
-            raise ValueError("give exactly one of zone_id or group_id")
+        if sum(x is not None for x in (self.zone_id, self.group_id, self.building_id)) != 1:
+            raise ValueError("give exactly one of zone_id, group_id or building_id")
         for v in (self.start, self.end):
             try:
                 time.fromisoformat(v)
@@ -167,10 +199,11 @@ def _check_campus(p: Principal, campus_id: int | None):
 
 
 def target_campuses(db: Session, kind: str, target_id: int | None) -> list[int | None]:
-    """Campus ids an action on this thermostat/zone/group touches (for campus managers)."""
+    """Campus ids an action on this thermostat/zone/group/building touches (campus managers)."""
     if target_id is None:
         return []
-    obj = db.get({"thermostat": Thermostat, "zone": Zone, "group": ZoneGroup}[kind], target_id)
+    obj = db.get({"thermostat": Thermostat, "zone": Zone, "group": ZoneGroup,
+                  "building": Building}[kind], target_id)
     if obj is None:
         raise HTTPException(404, f"{kind} not found")
     return [z.campus_id for z in obj.zones] if kind == "group" else [obj.campus_id]
@@ -181,8 +214,17 @@ def _check_target(db: Session, p: Principal, kind: str, target_id: int | None):
         _check_campus(p, c)
 
 
+def block_owner(b) -> tuple[str, int]:
+    """("zone"|"group"|"building", id) for a block (model or BlockIn)."""
+    for kind in ("zone", "group", "building"):
+        if getattr(b, f"{kind}_id") is not None:
+            return kind, getattr(b, f"{kind}_id")
+    raise HTTPException(400, "schedule block has no owner")
+
+
 def block_dict(b: ScheduleBlock) -> dict:
-    return {"id": b.id, "zone_id": b.zone_id, "group_id": b.group_id, "weekdays": b.weekdays,
+    return {"id": b.id, "zone_id": b.zone_id, "group_id": b.group_id,
+            "building_id": b.building_id, "weekdays": b.weekdays,
             "start": b.start.strftime("%H:%M"), "end": b.end.strftime("%H:%M"), "mode": b.mode,
             "heat": b.heat, "cool": b.cool, "label": b.label}
 
@@ -201,9 +243,23 @@ def thermostat_dict(t: Thermostat) -> dict:
 
 def zone_dict(z: Zone) -> dict:
     return {c: getattr(z, c) for c in (
-        "id", "name", "campus_id", "enabled", "calendar_id", "calendar_name", "lead_minutes",
+        "id", "name", "campus_id", "building_id", "enabled", "lead_minutes",
         "tail_minutes", "occupied_heat", "occupied_cool", "unoccupied_heat", "unoccupied_cool",
-        "min_setpoint", "max_setpoint")} | {"thermostat_ids": [t.id for t in z.thermostats]}
+        "min_setpoint", "max_setpoint")} | {"thermostat_ids": [t.id for t in z.thermostats],
+                                            "room_ids": [r.id for r in z.rooms],
+                                            "calendar_ids": z.calendar_ids}
+
+
+def building_dict(b: Building) -> dict:
+    return {"id": b.id, "name": b.name, "campus_id": b.campus_id,
+            "google_building_id": b.google_building_id,
+            "zone_ids": [z.id for z in b.zones], "room_ids": [r.id for r in b.rooms]}
+
+
+def room_dict(r: Room) -> dict:
+    return {"id": r.id, "name": r.name, "campus_id": r.campus_id, "building_id": r.building_id,
+            "calendar_id": r.calendar_id, "capacity": r.capacity,
+            "zone_ids": [z.id for z in r.zones]}
 
 
 def _running(equipment: list[str]) -> str:
@@ -231,17 +287,20 @@ def zone_status(db: Session, z: Zone, now: datetime | None = None,
     nxt = (resolve(cfg, until, zone_ovs, events, blocks, deadband)
            if until < now + look_ahead else None)
 
-    override = event = None
+    override = event = event_room = None
     kind, _, ref_id = (d.ref or "").partition(":")
     if kind == "override":
         o = db.get(Override, int(ref_id))
         if o:
-            override = {"id": o.id, "scope": "zone" if o.zone_id == z.id else "group",
-                        "group": (g.name if o.group_id and (g := db.get(ZoneGroup, o.group_id))
-                                  else None),
+            scope = "zone" if o.zone_id == z.id else "group" if o.group_id else "building"
+            owner = (db.get(ZoneGroup, o.group_id) if o.group_id
+                     else db.get(Building, o.building_id) if o.building_id else None)
+            override = {"id": o.id, "scope": scope, "group": owner.name if owner else None,
                         "created_by": o.created_by, "reason": o.reason, "ends_at": o.ends_at}
     elif kind == "event":
-        event = next((e.title for e in events if e.id == ref_id), None) or "a booking"
+        ev = next((e for e in events if e.id == ref_id), None)
+        event = (ev.title if ev else None) or "a booking"
+        event_room = ev.room if ev and len(z.rooms) > 1 else None
 
     online = [t for t in z.thermostats if t.connected]
     temps = [t.current_temp for t in online if t.current_temp is not None]
@@ -252,7 +311,8 @@ def zone_status(db: Session, z: Zone, now: datetime | None = None,
         "running": _running([t.equipment_running or "" for t in online]),
         "thermostats": len(z.thermostats), "online": len(online),
         "heat": d.heat, "cool": d.cool, "intent": d.intent, "source": d.source,
-        "override": override, "event": event, "until": until if nxt else None,
+        "override": override, "event": event, "event_room": event_room,
+        "rooms": [r.name for r in z.rooms], "until": until if nxt else None,
         "next": {"heat": nxt.heat, "cool": nxt.cool, "intent": nxt.intent,
                  "source": nxt.source} if nxt else None,
     }
@@ -269,18 +329,24 @@ def room_points(z: Zone, since: datetime, until: datetime | None = None) -> list
 
 
 def room_insights(z: Zone, now: datetime | None = None, days: int = 7) -> dict:
-    """Warm-up times, daily heating/cooling hours and occupancy over the last `days`."""
+    """Time to target, daily heating/cooling hours and occupancy over the last `days`."""
     now = now or utcnow()
     tz = z.campus.timezone if z.campus else get_settings().default_timezone
     pts = room_points(z, now - timedelta(days=days))
-    ws = warmups(pts)
+    ws = time_to_target(pts)
     return {
         "zone_id": z.id, "days": days, "samples": len(pts),
         "last_sample": pts[-1].at if pts else None,
         "lead_minutes": z.lead_minutes,
-        "warmups": [w.__dict__ for w in ws[-12:]],
-        "warmup_summary": warmup_summary(ws),
-        "runtime": [{"day": d, "heat_h": h, "cool_h": c} for d, h, c in daily_runtime(pts, tz)],
+        "time_to_target": [w.__dict__ for w in ws[-12:]],
+        "time_to_target_summary": time_to_target_summary(ws),
+        # Hourly bars for a day; daily bars for longer ranges.
+        "runtime_step": "hour" if days <= 1 else "day",
+        "runtime": ([{"start": t, "label": t.strftime("%-I%p").lower()[:-1], "heat_h": h,
+                      "cool_h": c} for t, h, c in hourly_runtime(pts, tz)] if days <= 1 else
+                    [{"start": d, "label": d.strftime("%a")[:2] if days <= 7
+                      else d.strftime("%-d"), "heat_h": h, "cool_h": c}
+                     for d, h, c in daily_runtime(pts, tz)]),
         "runtime_total": {"heat_h": round(sum(p.heat_s for p in pts) / 3600, 1),
                           "cool_h": round(sum(p.cool_s for p in pts) / 3600, 1)},
         "occupancy": occupancy(pts, z.unoccupied_heat, z.unoccupied_cool),
@@ -344,12 +410,15 @@ def list_groups(db: Session = Depends(get_db), _=Depends(current_principal)):
 
 @router.get("/schedule-blocks")
 def list_blocks(zone_id: int | None = None, group_id: int | None = None,
+                building_id: int | None = None,
                 db: Session = Depends(get_db), _=Depends(current_principal)):
     q = select(ScheduleBlock).order_by(ScheduleBlock.start)
     if zone_id is not None:
         q = q.where(ScheduleBlock.zone_id == zone_id)
     if group_id is not None:
         q = q.where(ScheduleBlock.group_id == group_id)
+    if building_id is not None:
+        q = q.where(ScheduleBlock.building_id == building_id)
     return [block_dict(b) for b in db.scalars(q)]
 
 
@@ -386,7 +455,8 @@ def calendar_resources(_=Depends(current_principal)):
 def list_overrides(db: Session = Depends(get_db), _=Depends(current_principal)):
     rows = db.scalars(select(Override).where(Override.cancelled.is_(False),
                                              Override.ends_at > utcnow()))
-    return [{c: getattr(o, c) for c in ("id", "thermostat_id", "zone_id", "group_id", "mode",
+    return [{c: getattr(o, c) for c in ("id", "thermostat_id", "zone_id", "group_id",
+                                        "building_id", "mode",
                                         "heat", "cool", "starts_at", "ends_at", "created_by",
                                         "reason")} for o in rows]
 
@@ -409,9 +479,22 @@ def create_campus(body: CampusIn, db: Session = Depends(get_db), p=Depends(requi
     return {"id": c.id}
 
 
+def _same_campus(obj, campus_id: int, what: str):
+    if obj is None:
+        raise HTTPException(400, f"{what} not found")
+    if obj.campus_id != campus_id:
+        raise HTTPException(400, f"{what} {obj.name!r} is on another campus")
+    return obj
+
+
 def _apply_zone(db: Session, z: Zone, body: ZoneIn):
-    for k, v in body.model_dump(exclude={"thermostat_ids"}).items():
+    if body.building_id is not None:
+        _same_campus(db.get(Building, body.building_id), body.campus_id, "building")
+    for k, v in body.model_dump(exclude={"thermostat_ids", "room_ids"}).items():
         setattr(z, k, v)
+    if body.room_ids is not None:
+        z.rooms = [_same_campus(db.get(Room, rid), body.campus_id, f"room {rid}")
+                   for rid in body.room_ids]
     if body.thermostat_ids is not None:
         for t in list(z.thermostats):
             if t.id not in body.thermostat_ids:
@@ -454,6 +537,181 @@ def delete_zone(zone_id: int, db: Session = Depends(get_db), p=Depends(require_w
     db.delete(z)
     audit(db, p, "delete_zone", z.name)
     return {"ok": True}
+
+
+# ---------- buildings & rooms ----------
+
+@router.get("/buildings")
+def list_buildings(db: Session = Depends(get_db), _=Depends(current_principal)):
+    return [building_dict(b) for b in db.scalars(select(Building).order_by(Building.name))]
+
+
+@router.get("/rooms")
+def list_rooms(db: Session = Depends(get_db), _=Depends(current_principal)):
+    return [room_dict(r) for r in db.scalars(select(Room).order_by(Room.name))]
+
+
+def _building_or_404(db: Session, building_id: int) -> Building:
+    b = db.get(Building, building_id)
+    if not b:
+        raise HTTPException(404, "building not found")
+    return b
+
+
+def _room_or_404(db: Session, room_id: int) -> Room:
+    r = db.get(Room, room_id)
+    if not r:
+        raise HTTPException(404, "room not found")
+    return r
+
+
+@router.post("/buildings", status_code=201)
+def create_building(body: BuildingIn, db: Session = Depends(get_db), p=Depends(require_write)):
+    _check_campus(p, body.campus_id)
+    if not db.get(Campus, body.campus_id):
+        raise HTTPException(400, "campus not found")
+    b = Building(name=body.name, campus_id=body.campus_id)
+    db.add(b)
+    db.flush()
+    audit(db, p, "create_building", b.name)
+    return {"id": b.id}
+
+
+@router.put("/buildings/{building_id}")
+def update_building(building_id: int, body: BuildingIn, db: Session = Depends(get_db),
+                    p=Depends(require_write)):
+    b = _building_or_404(db, building_id)
+    _check_campus(p, b.campus_id)
+    if body.campus_id != b.campus_id:
+        raise HTTPException(400, "a building can't move to another campus")
+    b.name = body.name
+    audit(db, p, "update_building", b.name)
+    return building_dict(b)
+
+
+@router.delete("/buildings/{building_id}")
+def delete_building(building_id: int, db: Session = Depends(get_db), p=Depends(require_write)):
+    """Zones and rooms in it are kept (no building); its overrides and blocks go."""
+    b = _building_or_404(db, building_id)
+    _check_campus(p, b.campus_id)
+    for z in b.zones:
+        z.building_id = None
+    for r in b.rooms:
+        r.building_id = None
+    db.delete(b)
+    audit(db, p, "delete_building", b.name)
+    return {"ok": True}
+
+
+def _apply_room(db: Session, p: Principal, r: Room, body: RoomIn):
+    if body.building_id is not None:
+        _same_campus(db.get(Building, body.building_id), body.campus_id, "building")
+    if body.calendar_id:
+        other = db.scalar(select(Room).where(Room.calendar_id == body.calendar_id))
+        if other and other is not r:
+            raise HTTPException(409, f"that calendar already belongs to {other.name!r}")
+    r.name, r.campus_id, r.building_id = body.name, body.campus_id, body.building_id
+    r.calendar_id, r.capacity = body.calendar_id or None, body.capacity
+    if body.zone_ids is not None:
+        zones = [_same_campus(db.get(Zone, zid), body.campus_id, f"zone {zid}")
+                 for zid in body.zone_ids]
+        for z in set(zones) ^ set(r.zones):
+            _check_campus(p, z.campus_id)
+        r.zones = zones
+
+
+@router.post("/rooms", status_code=201)
+def create_room(body: RoomIn, db: Session = Depends(get_db), p=Depends(require_write)):
+    _check_campus(p, body.campus_id)
+    r = Room(name=body.name, campus_id=body.campus_id)
+    db.add(r)
+    _apply_room(db, p, r, body)
+    db.flush()
+    audit(db, p, "create_room", r.name, body.model_dump())
+    return {"id": r.id}
+
+
+@router.put("/rooms/{room_id}")
+def update_room(room_id: int, body: RoomIn, db: Session = Depends(get_db),
+                p=Depends(require_write)):
+    r = _room_or_404(db, room_id)
+    _check_campus(p, r.campus_id)
+    _check_campus(p, body.campus_id)
+    _apply_room(db, p, r, body)
+    audit(db, p, "update_room", r.name, body.model_dump())
+    return room_dict(r)
+
+
+@router.delete("/rooms/{room_id}")
+def delete_room(room_id: int, db: Session = Depends(get_db), p=Depends(require_write)):
+    r = _room_or_404(db, room_id)
+    _check_campus(p, r.campus_id)
+    db.delete(r)
+    audit(db, p, "delete_room", r.name)
+    return {"ok": True}
+
+
+@router.get("/google/buildings")
+def google_buildings(_=Depends(require_admin)):
+    """Workspace buildings with their room counts, for the import screen."""
+    if not gcal.configured():
+        raise HTTPException(503, "Google service account not configured")
+    rooms = gcal.list_resources()
+    names = {b.id: b.name for b in gcal.list_buildings()}
+    ids = sorted({r.building or "" for r in rooms}, key=lambda i: (i == "", names.get(i, i)))
+    return [{"id": i, "name": names.get(i, i) or "No building",
+             "rooms": sum(1 for r in rooms if (r.building or "") == i)} for i in ids]
+
+
+def import_google_rooms(db: Session, p: Principal, body: GoogleImportIn,
+                        resources: list | None = None, buildings: dict | None = None) -> dict:
+    """Create buildings and rooms (with their calendars) from Google Workspace. Existing rooms
+    (same calendar) are left alone, so this can be run again after rooms are added."""
+    for cid in set(body.campuses.values()):
+        _check_campus(p, cid)
+    _check_campuses(db, list(set(body.campuses.values())))
+    resources = resources if resources is not None else gcal.list_resources()
+    if buildings is None:
+        buildings = {b.id: b.name for b in gcal.list_buildings()}
+    known = {r.calendar_id for r in db.scalars(select(Room)) if r.calendar_id}
+    made_b = made_r = 0
+    for res in resources:
+        gid = res.building or ""
+        cid = body.campuses.get(gid)
+        if cid is None or res.email in known:
+            continue
+        b = None
+        if gid:
+            b = db.scalar(select(Building).where(Building.campus_id == cid,
+                                                 Building.google_building_id == gid))
+            name = (buildings.get(gid) or gid)[:100]
+            b = b or db.scalar(select(Building).where(Building.campus_id == cid,
+                                                      Building.name == name))
+            if b is None:
+                b = Building(campus_id=cid, name=name, google_building_id=gid)
+                db.add(b)
+                db.flush()
+                made_b += 1
+            b.google_building_id = gid
+        name, n = res.name[:100], 2
+        while db.scalar(select(Room).where(Room.campus_id == cid, Room.name == name)):
+            name, n = f"{res.name[:95]} ({n})", n + 1
+        db.add(Room(campus_id=cid, building=b, name=name, calendar_id=res.email,
+                    capacity=res.capacity))
+        known.add(res.email)
+        made_r += 1
+    db.flush()
+    audit(db, p, "import_google_rooms", f"{made_r} rooms", {"buildings": made_b,
+                                                             "rooms": made_r})
+    return {"buildings": made_b, "rooms": made_r}
+
+
+@router.post("/rooms/import-google")
+def post_import_google(body: GoogleImportIn, db: Session = Depends(get_db),
+                       p=Depends(require_admin)):
+    if not gcal.configured():
+        raise HTTPException(503, "Google service account not configured")
+    return import_google_rooms(db, p, body)
 
 
 def _group_or_404(db: Session, group_id: int) -> ZoneGroup:
@@ -503,11 +761,9 @@ def delete_group(group_id: int, db: Session = Depends(get_db), p=Depends(require
 
 @router.post("/schedule-blocks", status_code=201)
 def create_block(body: BlockIn, db: Session = Depends(get_db), p=Depends(require_write)):
-    if body.zone_id is not None:
-        _check_target(db, p, "zone", body.zone_id)
-    else:
-        _check_target(db, p, "group", body.group_id)
-    b = ScheduleBlock(zone_id=body.zone_id, group_id=body.group_id, weekdays=body.weekdays,
+    _check_target(db, p, *block_owner(body))
+    b = ScheduleBlock(zone_id=body.zone_id, group_id=body.group_id,
+                      building_id=body.building_id, weekdays=body.weekdays,
                       start=time.fromisoformat(body.start), end=time.fromisoformat(body.end),
                       mode=body.mode, heat=body.heat, cool=body.cool, label=body.label)
     db.add(b)
@@ -521,17 +777,15 @@ def delete_block(block_id: int, db: Session = Depends(get_db), p=Depends(require
     b = db.get(ScheduleBlock, block_id)
     if not b:
         raise HTTPException(404, "schedule block not found")
-    if b.zone_id is not None:
-        _check_target(db, p, "zone", b.zone_id)
-    else:
-        _check_target(db, p, "group", b.group_id)
+    _check_target(db, p, *block_owner(b))
     db.delete(b)
     audit(db, p, "delete_schedule_block", b.label or f"block {b.id}", block_dict(b))
     return {"ok": True}
 
 
 def create_override(db: Session, p: Principal, body: OverrideIn) -> Override:
-    model = {"thermostat": Thermostat, "zone": Zone, "group": ZoneGroup}[body.target]
+    model = {"thermostat": Thermostat, "zone": Zone, "group": ZoneGroup,
+             "building": Building}[body.target]
     target = db.get(model, body.target_id)
     if not target:
         raise HTTPException(404, f"{body.target} not found")

@@ -8,7 +8,7 @@
   <thead><tr><th>Group</th><th>Zones</th><th class="hide-sm">Description</th></tr></thead>
   <tbody>
   {% for g in groups %}
-    <tr><td><a href="/groups/{{ g.id }}">{{ g.name }}</a></td>
+    <tr><td><a href="/groups/{{ g.id }}/edit">{{ g.name }}</a></td>
         <td>{{ g.zones | map(attribute='name') | join(', ') or '—' }}</td>
         <td class="hide-sm muted">{{ g.description or '' }}</td></tr>
   {% else %}<tr><td colspan="3" class="muted">No groups yet.</td></tr>{% endfor %}

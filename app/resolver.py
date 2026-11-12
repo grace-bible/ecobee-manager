@@ -1,9 +1,9 @@
 """Decide what each zone should be doing right now. Pure functions, no I/O.
 
 Priority (docs/SPEC.md §5):
-  1. manual override   thermostat > zone > group, newest first within a level
-  2. calendar event    on the zone's resource calendar, widened by lead/tail
-  3. schedule block    zone blocks, then group blocks
+  1. manual override   thermostat > zone > group > building, newest first within a level
+  2. calendar event    on any of the zone's rooms' calendars, widened by lead/tail
+  3. schedule block    zone blocks, then group blocks, then building blocks
   4. default           zone's unoccupied setpoints
 Then guardrails clamp to [min, max] and enforce a heat/cool deadband.
 """
@@ -37,7 +37,7 @@ class ZoneCfg:
 
 @dataclass(frozen=True)
 class OverrideIn:
-    level: int  # 0 = thermostat, 1 = zone, 2 = group (lower wins)
+    level: int  # 0 = thermostat, 1 = zone, 2 = group, 3 = building (lower wins)
     mode: str
     heat: float | None
     cool: float | None
@@ -53,6 +53,7 @@ class EventIn:
     title: str = ""
     tag: dict | None = None  # output of parse_hvac_tags
     id: str | None = None
+    room: str | None = None  # which of the zone's rooms it's booked in (display only)
 
 
 @dataclass(frozen=True)
@@ -63,7 +64,7 @@ class BlockIn:
     mode: str = OCCUPIED
     heat: float | None = None
     cool: float | None = None
-    is_group: bool = False
+    level: int = 0  # 0 = zone, 1 = group, 2 = building (lower wins)
     id: int | None = None
 
 
@@ -174,11 +175,11 @@ def resolve(
             d.notes.append("event tag applied")
         return d
 
-    # 3. Schedule (zone blocks beat group blocks)
+    # 3. Schedule (zone blocks beat group blocks beat building blocks)
     local = now.astimezone(ZoneInfo(zone.timezone))
     active = [b for b in blocks if _block_active(b, local)]
     if active:
-        b = min(active, key=lambda b: b.is_group)
+        b = min(active, key=lambda b: b.level)
         return _make(b.mode, zone, b.heat, b.cool, "schedule", f"block:{b.id}", deadband)
 
     # 4. Default

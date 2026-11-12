@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% set section = 'rooms' %}
+{% import "partials/room_ui.html" as ui with context %}
+{% block title %}{{ building.name }}{% endblock %}
+{% set tz = building.campus.timezone %}
+{% block content %}
+<div class="pagehead">
+  <div>
+    <div class="crumbs"><a href="/?campus={{ building.campus_id }}">{{ building.campus.name }}</a></div>
+    <h1>{{ building.name }}</h1>
+    <p class="muted" style="margin:0">{{ building.zones | length }} zone{{ 's' if building.zones | length != 1 }} · {{ building.rooms | length }} room{{ 's' if building.rooms | length != 1 }}</p>
+  </div>
+  {% if editable %}<div class="building-actions">{{ ui.quick_actions('building', building.id, building.name) }}</div>{% endif %}
+</div>
+
+<div class="rooms">
+  {% for z in building.zones if z.enabled %}{{ ui.room_card(z, status[z.id], tz, editable) }}
+  {% else %}<div class="panel muted">No zones in this building yet.{% if editable %} <a href="/zones/new?campus={{ building.campus_id }}&building={{ building.id }}">Add one</a>.{% endif %}</div>{% endfor %}
+</div>
+
+<h2 id="schedule">Weekly schedule for the whole building</h2>
+<p class="muted">Applies to every zone in {{ building.name }} unless the zone or one of its groups has its own schedule at that time. Bookings and overrides still take priority.</p>
+{% with owner_field='building_id', owner_id=building.id, editable=editable %}{% include "partials/schedule.html" %}{% endwith %}
+
+{{ ui.adjust_dialog() }}
+{% endblock %}

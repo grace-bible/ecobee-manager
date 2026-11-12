@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% set section = 'setup' %}{% set sub = 'zones' %}
+{% block title %}Import rooms{% endblock %}
+{% block content %}
+<div class="pagehead"><div>
+  <div class="crumbs"><a href="/setup">Buildings &amp; rooms</a></div>
+  <h1>Import rooms from Google</h1>
+  <p class="muted" style="margin:0;max-width:720px">Creates a building for each Google Workspace building and a room (with its calendar) for each room resource in it. Rooms already here are left alone, so you can run this again after adding rooms in Google. You'll still assign rooms to zones afterwards.</p>
+</div></div>
+
+{% if not google %}
+  <div class="panel">Google Calendar isn't connected yet. Set the service account in the environment (see System).</div>
+{% elif error %}
+  <div class="msg warn">Couldn't read Workspace rooms: {{ error }}</div>
+{% elif not gbuildings %}
+  <div class="panel">No room resources found in Google Workspace.</div>
+{% else %}
+<form method="post" action="/setup/import">
+  <div class="tablewrap"><table>
+    <thead><tr><th>Google building</th><th class="right">Rooms</th><th>Import into</th></tr></thead>
+    <tbody>{% for gb in gbuildings %}
+      <tr><td><strong>{{ gb.name }}</strong></td><td class="right num">{{ gb.rooms }}</td>
+        <td><select name="b:{{ gb.id }}" aria-label="Campus for {{ gb.name }}">
+          <option value="">Skip</option>
+          {% for c in campuses %}<option value="{{ c.id }}" {% if campuses | length == 1 %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+        </select></td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  <div class="formfoot"><button>Import</button><a href="/setup" class="muted">Cancel</a></div>
+</form>
+{% endif %}
+{% endblock %}

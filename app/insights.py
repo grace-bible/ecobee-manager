@@ -1,8 +1,10 @@
 """What the 5-minute history says about a room. Pure functions, no I/O (like the resolver).
 
 - `merge_room`: several thermostats in one room → one series.
-- `warmups`: each time the target band tightened, how long the room took to get there.
-- `daily_runtime`: heating/cooling hours per local day.
+- `time_to_target`: each time the target band tightened (heating up or cooling down to a
+  new target), how long the room took to get there.
+- `downsample`: average into wider steps for long chart ranges.
+- `daily_runtime` / `hourly_runtime`: heating/cooling hours per local day or hour.
 - `occupancy`: hours conditioned for nobody, and hours occupied at setback (needs a
   thermostat with an occupancy sensor).
 """
@@ -31,7 +33,7 @@ class Point:
 
 
 @dataclass(frozen=True)
-class Warmup:
+class TargetRun:
     kind: str  # "heat" | "cool"
     started: datetime
     target: float
@@ -62,8 +64,8 @@ def merge_room(series: list[list[Point]]) -> list[Point]:
     return out
 
 
-def warmups(points: list[Point], min_step: float = 2.0, tolerance: float = 0.5,
-            give_up: timedelta = timedelta(hours=3)) -> list[Warmup]:
+def time_to_target(points: list[Point], min_step: float = 2.0, tolerance: float = 0.5,
+            give_up: timedelta = timedelta(hours=3)) -> list[TargetRun]:
     """Each time heat rose (or cool fell) by ≥ min_step while the room was outside the new
     band: minutes until the room came within `tolerance` of it."""
     out = []
@@ -91,11 +93,11 @@ def warmups(points: list[Point], min_step: float = 2.0, tolerance: float = 0.5,
                                            else q.temp <= after + tolerance):
                     minutes = int((q.at - p.at).total_seconds() // 60)
                     break
-            out.append(Warmup(kind, p.at, after, p.temp, minutes))
+            out.append(TargetRun(kind, p.at, after, p.temp, minutes))
     return out
 
 
-def warmup_summary(ws: list[Warmup]) -> dict:
+def time_to_target_summary(ws: list[TargetRun]) -> dict:
     done = [w.minutes for w in ws if w.minutes is not None]
     return {"count": len(ws), "reached": len(done), "missed": len(ws) - len(done),
             "median": int(median(done)) if done else None,
@@ -111,6 +113,17 @@ def daily_runtime(points: list[Point], tz: str) -> list[tuple[date, float, float
         d[0] += p.heat_s / 3600
         d[1] += p.cool_s / 3600
     return [(d, round(h, 2), round(c, 2)) for d, (h, c) in sorted(days.items())]
+
+
+def hourly_runtime(points: list[Point], tz: str) -> list[tuple[datetime, float, float]]:
+    """[(local hour start, heating hours, cooling hours)] oldest first, for short ranges."""
+    zone = ZoneInfo(tz)
+    hours: dict[datetime, list[float]] = defaultdict(lambda: [0.0, 0.0])
+    for p in points:
+        h = hours[p.at.astimezone(zone).replace(minute=0, second=0, microsecond=0)]
+        h[0] += p.heat_s / 3600
+        h[1] += p.cool_s / 3600
+    return [(h, round(a, 2), round(b, 2)) for h, (a, b) in sorted(hours.items())]
 
 
 def occupancy(points: list[Point], setback_heat: float, setback_cool: float,
@@ -131,3 +144,28 @@ def occupancy(points: list[Point], setback_heat: float, setback_cool: float,
     missed = sum(INTERVAL_H for p in known if not conditioned(p) and p.occupied)
     return {"has_data": True, "conditioned_empty_h": round(empty, 2),
             "occupied_setback_h": round(missed, 2)}
+
+
+def downsample(points: list[Point], step: timedelta) -> list[Point]:
+    """Average into `step`-wide buckets (5-minute data over 30 days is 8,640 points)."""
+    if step <= timedelta(minutes=5) or not points:
+        return points
+    secs = int(step.total_seconds())
+    buckets: dict[datetime, list[Point]] = defaultdict(list)
+    for p in points:
+        ts = int(p.at.timestamp())
+        buckets[datetime.fromtimestamp(ts - ts % secs, tz=p.at.tzinfo)].append(p)
+    # Same averaging as merging thermostats; occupied if anyone was there in the bucket.
+    return [Point(at, *_avg_fields(ps)) for at, ps in sorted(buckets.items())]
+
+
+def _avg_fields(ps: list[Point]):
+    def avg(vals):
+        vals = [v for v in vals if v is not None]
+        return round(sum(vals) / len(vals), 1) if vals else None
+
+    occ = [p.occupied for p in ps if p.occupied is not None]
+    return (avg(p.temp for p in ps), avg(p.heat_sp for p in ps), avg(p.cool_sp for p in ps),
+            avg(p.outdoor for p in ps), avg(p.heat_s for p in ps) or 0,
+            avg(p.cool_s for p in ps) or 0, any(occ) if occ else None)
+
